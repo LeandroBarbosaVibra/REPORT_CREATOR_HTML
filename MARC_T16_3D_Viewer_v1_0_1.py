@@ -2469,7 +2469,19 @@ Scroll Wheel: Zoom
 <div class="ck"><input type="checkbox" id="cut-z-on" onchange="updateCutPlane('z')"><label>Enable Z Cut</label></div>
 <div class="range-row" id="cut-z-row" style="display:none"><span>Z pos:</span><input type="range" id="cut-z-pos" min="0" max="100" value="50" step="1" oninput="updateCutPlane('z')"><span class="rv" id="cut-z-val">50%</span>
 <select id="cut-z-dir" onchange="updateCutPlane('z')" style="width:40px;font-size:9px;padding:1px"><option value="+">+</option><option value="-">-</option></select></div>
-<button class="bt bt2" onclick="resetCutPlanes()" style="margin-top:6px;font-size:10px">Reset Cuts</button>
+<div style="font-size:11px;font-weight:bold;color:#555;margin:10px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Rotation Cut</div>
+<div style="font-size:10px;color:#666;margin-bottom:6px">Rotate a cut plane around a global X, Y, or Z reference line.</div>
+<div class="ck"><input type="checkbox" id="rot-cut-on" onchange="updateRotationCut()"><label>Enable Rotation Cut</label></div>
+<div id="rot-cut-controls" style="display:none;margin:4px 0 2px 0">
+<div class="ck"><label style="font-size:11px;color:#444">Axis:</label><select id="rot-cut-axis" onchange="updateRotationCut()" style="margin-left:6px;width:52px;font-size:10px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"><option value="x" selected>X</option><option value="y">Y</option><option value="z">Z</option></select><span id="rot-cut-plane-hint" style="margin-left:8px;font-size:9px;color:#666">0&deg; =&gt; XY plane</span></div>
+<div class="range-row"><span>Angle:</span><input type="range" id="rot-cut-angle" min="0" max="360" value="0" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-angle-val">0&deg;</span>
+<select id="rot-cut-dir" onchange="updateRotationCut()" title="Rotation direction" style="width:40px;font-size:9px;padding:1px"><option value="+">+</option><option value="-">-</option></select></div>
+<div style="font-size:10px;color:#666;margin:6px 0 2px 0">Move Reference</div>
+<div class="range-row"><span id="rot-cut-ref-a-lbl">Y ref:</span><input type="range" id="rot-cut-ref-a" min="0" max="100" value="50" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-ref-a-val">50%</span></div>
+<div class="range-row"><span id="rot-cut-ref-b-lbl">Z ref:</span><input type="range" id="rot-cut-ref-b" min="0" max="100" value="50" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-ref-b-val">50%</span></div>
+<div style="display:flex;gap:4px;margin-top:4px"><button class="bt bt2" onclick="resetRotationCutReference()" style="font-size:9px;padding:1px 8px;flex:1">Center Ref</button><button class="bt bt2" onclick="resetRotationCutAngle()" style="font-size:9px;padding:1px 8px;flex:1">Zero Angle</button></div>
+</div>
+<button class="bt bt2" onclick="resetCutPlanes()" style="margin-top:6px;font-size:10px">Reset All Cuts</button>
 <div style="font-size:11px;font-weight:bold;color:#555;margin:10px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Hide Elements</div>
 <div class="ck"><input type="checkbox" id="hide-elem-on" onchange="tgHideElements(this.checked)"><label>Hide Elements</label></div>
 <div id="hide-elem-actions">
@@ -2819,8 +2831,9 @@ let legendOutsideDblInit=false;
 let rawColors=null;
 let gifWorkerUrl=null;
 let axScene,axCamera,showAxes=true;
-let cutPlanes={x:{on:false,pos:50,dir:'+'},y:{on:false,pos:50,dir:'+'},z:{on:false,pos:50,dir:'+'}};
+let cutPlanes={x:{on:false,pos:50,dir:'+'},y:{on:false,pos:50,dir:'+'},z:{on:false,pos:50,dir:'+'},rotation:{on:false,axis:'x',angle:0,dir:'+',refA:50,refB:50}};
 let meshBBox={xmin:0,xmax:1,ymin:0,ymax:1,zmin:0,zmax:1};
+let rotationCutLine=null,rotationCutPlaneMesh=null,rotationCutPlaneEdges=null;
 let vrfEnabled=false,vrfLo=0,vrfHi=1;
 let xyAppliedRange={xmin:'auto',xmax:'auto',ymin:'auto',ymax:'auto'};
 let xySecAppliedRange={ymin:'auto',ymax:'auto'};
@@ -4736,6 +4749,7 @@ legendOutsideDblInit=true;
 }
 pss();
 ulv(curMin,curMax);
+updateRotationCutUi(cutPlanes.rotation);
 updateLegendFormatControls();
 ugrl();
 initDialogBoxSystem();
@@ -4891,7 +4905,7 @@ if(uMs)uMs.visible=false;
 if(uEg)uEg.visible=false;
 return;
 }
-var hasCuts=(clipEnabled[0]||clipEnabled[1]||clipEnabled[2]);
+var hasCuts=anyCutEnabled();
 if(!uMs||hasCuts){
 buildUndeformedOverlay(hasCuts);
 }
@@ -6568,30 +6582,29 @@ el.style.background=hasCustomLegend()?buildCustomLegendGradientCSS('to right'):b
 // --- Element-based cut view filtering ---
 function getActiveCuts(){
 var cuts=[];
-var axes=['x','y','z'];
-for(var i=0;i<3;i++){
-if(!clipEnabled[i])continue;
-var axis=axes[i];
-var mn,mx;
-if(i===0){mn=meshBBox.xmin;mx=meshBBox.xmax;}
-else if(i===1){mn=meshBBox.ymin;mx=meshBBox.ymax;}
-else{mn=meshBBox.zmin;mx=meshBBox.zmax;}
-var range=mx-mn;if(Math.abs(range)<1e-20)range=1;
-var pos=mn+(cutPlanes[axis].pos/100)*range;
-cuts.push({axis:i,pos:pos,dir:cutPlanes[axis].dir});
+['x','y','z'].forEach(function(axis){
+var cut=buildAxisAlignedCut(axis);
+if(cut)cuts.push(cut);
+});
+var rotCut=getRotationCutData();
+if(rotCut&&rotCut.enabled){
+cuts.push({
+type:'rotation',
+normal:[rotCut.clipNormal.x,rotCut.clipNormal.y,rotCut.clipNormal.z],
+constant:rotCut.constant
+});
 }
 return cuts;
+}
+function getCutSignedDistance(p,cut){
+if(!p||!cut||!cut.normal)return -Infinity;
+return (p[0]*cut.normal[0])+(p[1]*cut.normal[1])+(p[2]*cut.normal[2])+cut.constant;
 }
 function isPointVisibleByCuts(p,cuts){
 if(!p)return false;
 if(!cuts||cuts.length===0)return true;
 for(var ci=0;ci<cuts.length;ci++){
-var coord=p[cuts[ci].axis];
-if(cuts[ci].dir==='+'){
-if(coord>cuts[ci].pos+1e-10)return false;
-}else{
-if(coord<cuts[ci].pos-1e-10)return false;
-}
+if(getCutSignedDistance(p,cuts[ci])<-1e-10)return false;
 }
 return true;
 }
@@ -6604,12 +6617,7 @@ if(nIdx<0||nIdx>=nodes.length)continue;
 var p=nodes[nIdx];
 var passAll=true;
 for(var ci=0;ci<cuts.length;ci++){
-var coord=p[cuts[ci].axis];
-if(cuts[ci].dir==='+'){
-if(coord>cuts[ci].pos+1e-10){passAll=false;break;}
-}else{
-if(coord<cuts[ci].pos-1e-10){passAll=false;break;}
-}
+if(getCutSignedDistance(p,cuts[ci])<-1e-10){passAll=false;break;}
 }
 if(passAll)return true;
 }
@@ -6727,6 +6735,9 @@ var c=cutPlanes[a];
 if(c&&c.on)parts.push(a+':'+c.pos+':'+c.dir);
 else parts.push(a+':off');
 }
+var rc=sanitizeRotationCutState(cutPlanes.rotation||{});
+if(rc.on)parts.push('rot:'+rc.axis+':'+rc.angle+':'+rc.dir+':'+rc.refA+':'+rc.refB);
+else parts.push('rot:off');
 return parts.join('|');
 }
 
@@ -6758,7 +6769,7 @@ updateLegendExtremaTargets();
 
 function tryFastUpdateMeshBuffers(nodes,colors,renderMode,topologyKey){
 if(vrfEnabled)return false;
-if(clipEnabled[0]||clipEnabled[1]||clipEnabled[2])return false;
+if(anyCutEnabled())return false;
 if(edgeMode!=='none')return false;
 if(!ms||!ms.geometry)return false;
 if(meshTopologyKey!==topologyKey||meshRenderMode!==renderMode)return false;
@@ -11629,8 +11640,16 @@ xyUpdatePlotSize();
 // ==================== VIEW CUT MANAGER ====================
 var clipEnabled=[false,false,false];
 var clipPlanesThree=[new THREE.Plane(),new THREE.Plane(),new THREE.Plane()];
+var rotationClipPlaneThree=new THREE.Plane();
 var activeClipPlanesArr=[];
-function anyCutEnabled(){return clipEnabled[0]||clipEnabled[1]||clipEnabled[2];}
+function anyCutEnabled(){return clipEnabled[0]||clipEnabled[1]||clipEnabled[2]||!!(cutPlanes.rotation&&cutPlanes.rotation.on);}
+function clampCutPercent(v){
+var n=parseInt(v,10);
+if(!isFinite(n))n=50;
+if(n<0)n=0;
+if(n>100)n=100;
+return n;
+}
 function computeMeshBBox(){
 var xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity,zmin=Infinity,zmax=-Infinity;
 for(var i=0;i<ON.length;i++){
@@ -11641,6 +11660,237 @@ if(p[2]<zmin)zmin=p[2];if(p[2]>zmax)zmax=p[2];
 }
 meshBBox={xmin:xmin,xmax:xmax,ymin:ymin,ymax:ymax,zmin:zmin,zmax:zmax};
 }
+function getAxisRangeInfo(axis){
+if(axis==='x'){
+return{axis:'x',min:meshBBox.xmin,max:meshBBox.xmax,mid:(meshBBox.xmin+meshBBox.xmax)*0.5,range:Math.max(Math.abs(meshBBox.xmax-meshBBox.xmin),1e-20)};
+}
+if(axis==='y'){
+return{axis:'y',min:meshBBox.ymin,max:meshBBox.ymax,mid:(meshBBox.ymin+meshBBox.ymax)*0.5,range:Math.max(Math.abs(meshBBox.ymax-meshBBox.ymin),1e-20)};
+}
+return{axis:'z',min:meshBBox.zmin,max:meshBBox.zmax,mid:(meshBBox.zmin+meshBBox.zmax)*0.5,range:Math.max(Math.abs(meshBBox.zmax-meshBBox.zmin),1e-20)};
+}
+function getMeshDiagonalSize(){
+var dx=meshBBox.xmax-meshBBox.xmin;
+var dy=meshBBox.ymax-meshBBox.ymin;
+var dz=meshBBox.zmax-meshBBox.zmin;
+var diag=Math.sqrt(dx*dx+dy*dy+dz*dz);
+if(!isFinite(diag)||diag<1e-12)diag=Math.max(B,1);
+return diag;
+}
+function getRotationCutAxisInfo(axis){
+axis=(axis==='y'||axis==='z')?axis:'x';
+if(axis==='y'){
+return{
+axis:'y',
+dir:new THREE.Vector3(0,1,0),
+baseNormal:new THREE.Vector3(1,0,0),
+refAxes:['x','z'],
+refLabels:['X ref:','Z ref:'],
+planeLabel:'YZ'
+};
+}
+if(axis==='z'){
+return{
+axis:'z',
+dir:new THREE.Vector3(0,0,1),
+baseNormal:new THREE.Vector3(0,1,0),
+refAxes:['x','y'],
+refLabels:['X ref:','Y ref:'],
+planeLabel:'XZ'
+};
+}
+return{
+axis:'x',
+dir:new THREE.Vector3(1,0,0),
+baseNormal:new THREE.Vector3(0,0,1),
+refAxes:['y','z'],
+refLabels:['Y ref:','Z ref:'],
+planeLabel:'XY'
+};
+}
+function sanitizeRotationCutState(src){
+src=src||{};
+return{
+on:!!src.on,
+axis:(src.axis==='y'||src.axis==='z')?src.axis:'x',
+angle:Math.max(0,Math.min(360,parseInt(src.angle,10)||0)),
+dir:(src.dir==='-')?'-':'+',
+refA:clampCutPercent(src.refA),
+refB:clampCutPercent(src.refB)
+};
+}
+function readRotationCutStateFromUi(){
+var state=sanitizeRotationCutState(cutPlanes.rotation||{});
+var onEl=document.getElementById('rot-cut-on');
+var axisEl=document.getElementById('rot-cut-axis');
+var angleEl=document.getElementById('rot-cut-angle');
+var dirEl=document.getElementById('rot-cut-dir');
+var refAEl=document.getElementById('rot-cut-ref-a');
+var refBEl=document.getElementById('rot-cut-ref-b');
+return sanitizeRotationCutState({
+on:onEl?onEl.checked:state.on,
+axis:axisEl?axisEl.value:state.axis,
+angle:angleEl?angleEl.value:state.angle,
+dir:dirEl?dirEl.value:state.dir,
+refA:refAEl?refAEl.value:state.refA,
+refB:refBEl?refBEl.value:state.refB
+});
+}
+function updateRotationCutUi(state){
+state=sanitizeRotationCutState(state||cutPlanes.rotation||{});
+cutPlanes.rotation=state;
+var onEl=document.getElementById('rot-cut-on');
+var controls=document.getElementById('rot-cut-controls');
+var axisEl=document.getElementById('rot-cut-axis');
+var angleEl=document.getElementById('rot-cut-angle');
+var angleVal=document.getElementById('rot-cut-angle-val');
+var dirEl=document.getElementById('rot-cut-dir');
+var refAEl=document.getElementById('rot-cut-ref-a');
+var refBEl=document.getElementById('rot-cut-ref-b');
+var refALbl=document.getElementById('rot-cut-ref-a-lbl');
+var refBLbl=document.getElementById('rot-cut-ref-b-lbl');
+var refAVal=document.getElementById('rot-cut-ref-a-val');
+var refBVal=document.getElementById('rot-cut-ref-b-val');
+var planeHint=document.getElementById('rot-cut-plane-hint');
+var info=getRotationCutAxisInfo(state.axis);
+if(onEl)onEl.checked=state.on;
+if(controls)controls.style.display=state.on?'block':'none';
+if(axisEl)axisEl.value=info.axis;
+if(angleEl)angleEl.value=String(state.angle);
+if(angleVal)angleVal.innerHTML=String(state.angle)+'&deg;';
+if(dirEl)dirEl.value=state.dir;
+if(refAEl)refAEl.value=String(state.refA);
+if(refBEl)refBEl.value=String(state.refB);
+if(refALbl)refALbl.textContent=info.refLabels[0];
+if(refBLbl)refBLbl.textContent=info.refLabels[1];
+if(refAVal)refAVal.textContent=String(state.refA)+'%';
+if(refBVal)refBVal.textContent=String(state.refB)+'%';
+if(planeHint)planeHint.innerHTML='0&deg; =&gt; '+info.planeLabel+' plane';
+}
+function buildAxisAlignedCut(axis){
+var cfg=cutPlanes[axis];
+if(!cfg||!cfg.on)return null;
+var bounds=getAxisRangeInfo(axis);
+var cutPos=bounds.min+(clampCutPercent(cfg.pos)/100)*bounds.range;
+var normal=[0,0,0];
+var constant=0;
+if(axis==='x'){
+if(cfg.dir==='+'){normal=[-1,0,0];constant=cutPos;}
+else{normal=[1,0,0];constant=-cutPos;}
+}
+else if(axis==='y'){
+if(cfg.dir==='+'){normal=[0,-1,0];constant=cutPos;}
+else{normal=[0,1,0];constant=-cutPos;}
+}
+else{
+if(cfg.dir==='+'){normal=[0,0,-1];constant=cutPos;}
+else{normal=[0,0,1];constant=-cutPos;}
+}
+return{type:'axis',axis:axis,normal:normal,constant:constant};
+}
+function getRotationCutData(){
+var state=sanitizeRotationCutState(cutPlanes.rotation||{});
+if(!state.on)return null;
+var info=getRotationCutAxisInfo(state.axis);
+var axisDir=info.dir.clone().normalize();
+var planeNormal=info.baseNormal.clone().normalize();
+var signedAngle=((state.dir==='-')?-1:1)*(state.angle*Math.PI/180.0);
+planeNormal.applyAxisAngle(axisDir,signedAngle).normalize();
+var refPoint=new THREE.Vector3(
+getAxisRangeInfo('x').mid,
+getAxisRangeInfo('y').mid,
+getAxisRangeInfo('z').mid
+);
+var refAInfo=getAxisRangeInfo(info.refAxes[0]);
+var refBInfo=getAxisRangeInfo(info.refAxes[1]);
+refPoint[info.refAxes[0]]=refAInfo.min+(state.refA/100)*refAInfo.range;
+refPoint[info.refAxes[1]]=refBInfo.min+(state.refB/100)*refBInfo.range;
+var clipNormal=planeNormal.clone().negate();
+var constant=planeNormal.dot(refPoint);
+var planeDir=planeNormal.clone().cross(axisDir).normalize();
+if(planeDir.lengthSq()<1e-16){
+planeDir=new THREE.Vector3(0,1,0).cross(axisDir).normalize();
+if(planeDir.lengthSq()<1e-16)planeDir=new THREE.Vector3(0,0,1).cross(axisDir).normalize();
+}
+var axisInfo=getAxisRangeInfo(info.axis);
+var diag=getMeshDiagonalSize();
+var linePad=Math.max(diag*0.08,axisInfo.range*0.05);
+var lineStart=refPoint.clone();
+var lineEnd=refPoint.clone();
+lineStart[info.axis]=axisInfo.min-linePad;
+lineEnd[info.axis]=axisInfo.max+linePad;
+var lineLength=Math.max(lineStart.distanceTo(lineEnd),diag*0.6);
+var planeSize=Math.max(diag*1.35,refAInfo.range*1.25,refBInfo.range*1.25);
+return{
+enabled:true,
+state:state,
+info:info,
+axisDir:axisDir,
+planeNormal:planeNormal,
+clipNormal:clipNormal,
+constant:constant,
+planeDir:planeDir,
+refPoint:refPoint,
+lineStart:lineStart,
+lineEnd:lineEnd,
+lineLength:lineLength,
+planeSize:planeSize
+};
+}
+function ensureRotationCutVisuals(){
+if(!sc)return;
+if(!rotationCutLine){
+var lineGeo=new THREE.BufferGeometry();
+lineGeo.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0,0,0],3));
+rotationCutLine=new THREE.LineSegments(lineGeo,new THREE.LineBasicMaterial({color:0xFF7043,transparent:true,opacity:0.95,depthTest:false}));
+rotationCutLine.renderOrder=997;
+rotationCutLine.frustumCulled=false;
+sc.add(rotationCutLine);
+}
+if(!rotationCutPlaneMesh){
+var planeGeo=new THREE.PlaneGeometry(1,1,1,1);
+rotationCutPlaneMesh=new THREE.Mesh(planeGeo,new THREE.MeshBasicMaterial({color:0x29B6F6,transparent:true,opacity:0.14,side:THREE.DoubleSide,depthWrite:false}));
+rotationCutPlaneMesh.renderOrder=996;
+rotationCutPlaneMesh.frustumCulled=false;
+sc.add(rotationCutPlaneMesh);
+rotationCutPlaneEdges=new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),new THREE.LineBasicMaterial({color:0x0288D1,transparent:true,opacity:0.85,depthTest:false}));
+rotationCutPlaneEdges.renderOrder=997;
+rotationCutPlaneEdges.frustumCulled=false;
+sc.add(rotationCutPlaneEdges);
+}
+}
+function setRotationCutVisualVisibility(show){
+if(rotationCutLine)rotationCutLine.visible=show;
+if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=show;
+if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=show;
+}
+function updateRotationCutVisuals(rotData){
+if(!sc)return;
+ensureRotationCutVisuals();
+if(!rotData||!rotData.enabled){
+setRotationCutVisualVisibility(false);
+return;
+}
+var lp=rotationCutLine.geometry.getAttribute('position');
+lp.array[0]=rotData.lineStart.x;lp.array[1]=rotData.lineStart.y;lp.array[2]=rotData.lineStart.z;
+lp.array[3]=rotData.lineEnd.x;lp.array[4]=rotData.lineEnd.y;lp.array[5]=rotData.lineEnd.z;
+lp.needsUpdate=true;
+rotationCutLine.geometry.computeBoundingSphere();
+var basis=new THREE.Matrix4();
+basis.makeBasis(rotData.axisDir,rotData.planeDir,rotData.planeNormal);
+var quat=new THREE.Quaternion().setFromRotationMatrix(basis);
+rotationCutPlaneMesh.position.copy(rotData.refPoint);
+rotationCutPlaneMesh.quaternion.copy(quat);
+rotationCutPlaneMesh.scale.set(rotData.lineLength,rotData.planeSize,1);
+rotationCutPlaneEdges.position.copy(rotData.refPoint);
+rotationCutPlaneEdges.quaternion.copy(quat);
+rotationCutPlaneEdges.scale.set(rotData.lineLength,rotData.planeSize,1);
+setRotationCutVisualVisibility(true);
+}
+function scheduleCutMeshRebuild(){
+if(cutRebuildTimer)clearTimeout(cutRebuildTimer);
+cutRebuildTimer=setTimeout(function(){cutRebuildTimer=null;rebuildCutMesh();},250);
+}
 function updateCutPlane(axis){
 var idx=axis==='x'?0:(axis==='y'?1:2);
 var cb=document.getElementById('cut-'+axis+'-on');
@@ -11649,41 +11899,54 @@ var valEl=document.getElementById('cut-'+axis+'-val');
 var dirEl=document.getElementById('cut-'+axis+'-dir');
 var row=document.getElementById('cut-'+axis+'-row');
 var enabled=cb.checked;
-cutPlanes[axis]={on:enabled,pos:parseInt(slider.value),dir:dirEl.value};
+cutPlanes[axis]={on:enabled,pos:clampCutPercent(slider.value),dir:(dirEl&&dirEl.value==='-')?'-':'+'};
 row.style.display=enabled?'flex':'none';
-valEl.textContent=slider.value+'%';
+slider.value=String(cutPlanes[axis].pos);
+valEl.textContent=String(cutPlanes[axis].pos)+'%';
 clipEnabled[idx]=enabled;
 // Instant visual feedback using Three.js clipping planes
 applyCutClipping();
 updateValueWindowsForCut();
-// Debounced full element-based rebuild for clean edges
-if(cutRebuildTimer)clearTimeout(cutRebuildTimer);
-cutRebuildTimer=setTimeout(function(){cutRebuildTimer=null;rebuildCutMesh();},250);
+scheduleCutMeshRebuild();
 }
-// Compute Three.js clipping plane for a given axis
+function updateRotationCut(){
+cutPlanes.rotation=readRotationCutStateFromUi();
+updateRotationCutUi(cutPlanes.rotation);
+applyCutClipping();
+updateValueWindowsForCut();
+scheduleCutMeshRebuild();
+}
+function resetRotationCutReference(){
+var refAEl=document.getElementById('rot-cut-ref-a');
+var refBEl=document.getElementById('rot-cut-ref-b');
+if(refAEl)refAEl.value='50';
+if(refBEl)refBEl.value='50';
+updateRotationCut();
+}
+function resetRotationCutAngle(){
+var angleEl=document.getElementById('rot-cut-angle');
+var dirEl=document.getElementById('rot-cut-dir');
+if(angleEl)angleEl.value='0';
+if(dirEl)dirEl.value='+';
+updateRotationCut();
+}
 function computeClipPlane(axis){
 var idx=axis==='x'?0:(axis==='y'?1:2);
-if(!clipEnabled[idx])return;
-var mn,mx;
-if(idx===0){mn=meshBBox.xmin;mx=meshBBox.xmax;}
-else if(idx===1){mn=meshBBox.ymin;mx=meshBBox.ymax;}
-else{mn=meshBBox.zmin;mx=meshBBox.zmax;}
-var range=mx-mn;if(Math.abs(range)<1e-20)range=1;
-var cutPos=mn+(cutPlanes[axis].pos/100)*range;
-var normal;
-if(cutPlanes[axis].dir==='+'){
-normal=new THREE.Vector3(idx===0?-1:0,idx===1?-1:0,idx===2?-1:0);
-clipPlanesThree[idx]=new THREE.Plane(normal,cutPos);
-}else{
-normal=new THREE.Vector3(idx===0?1:0,idx===1?1:0,idx===2?1:0);
-clipPlanesThree[idx]=new THREE.Plane(normal,-cutPos);
-}
+var cut=buildAxisAlignedCut(axis);
+if(!cut)return;
+clipPlanesThree[idx]=new THREE.Plane(new THREE.Vector3(cut.normal[0],cut.normal[1],cut.normal[2]),cut.constant);
 }
 // Apply Three.js clipping planes for instant visual feedback during slider drag
 function applyCutClipping(){
 ['x','y','z'].forEach(function(a){computeClipPlane(a);});
 activeClipPlanesArr=[];
 for(var i=0;i<3;i++){if(clipEnabled[i])activeClipPlanesArr.push(clipPlanesThree[i]);}
+var rotData=getRotationCutData();
+updateRotationCutVisuals(rotData);
+if(rotData&&rotData.enabled){
+rotationClipPlaneThree=new THREE.Plane(rotData.clipNormal.clone(),rotData.constant);
+activeClipPlanesArr.push(rotationClipPlaneThree);
+}
 var cArr=activeClipPlanesArr.length>0?activeClipPlanesArr:[];
 if(ms&&ms.material)ms.material.clippingPlanes=cArr;
 if(eg&&eg.material)eg.material.clippingPlanes=cArr;
@@ -11699,6 +11962,7 @@ if(eg&&eg.material)eg.material.clippingPlanes=[];
 if(featureEg&&featureEg.material)featureEg.material.clippingPlanes=[];
 if(vrfGhostMs&&vrfGhostMs.material)vrfGhostMs.material.clippingPlanes=[];
 if(vrfGhostEg&&vrfGhostEg.material)vrfGhostEg.material.clippingPlanes=[];
+updateRotationCutVisuals(getRotationCutData());
 // Rebuild mesh with element-based filtering
 var drawColors=null;
 if(!noContour&&rawColors){
@@ -11724,8 +11988,12 @@ document.getElementById('cut-'+axis+'-pos').value=50;
 document.getElementById('cut-'+axis+'-val').textContent='50%';
 document.getElementById('cut-'+axis+'-dir').value='+';
 document.getElementById('cut-'+axis+'-row').style.display='none';
+cutPlanes[axis]={on:false,pos:50,dir:'+'};
 });
 clipEnabled=[false,false,false];
+cutPlanes.rotation={on:false,axis:'x',angle:0,dir:'+',refA:50,refB:50};
+updateRotationCutUi(cutPlanes.rotation);
+updateRotationCutVisuals(null);
 activeClipPlanesArr=[];
 if(ms&&ms.material)ms.material.clippingPlanes=[];
 if(eg&&eg.material)eg.material.clippingPlanes=[];
@@ -11924,6 +12192,14 @@ cfg.currentState=cst;
 cfg.cutX={on:document.getElementById('cut-x-on').checked,pos:document.getElementById('cut-x-pos').value,dir:document.getElementById('cut-x-dir').value};
 cfg.cutY={on:document.getElementById('cut-y-on').checked,pos:document.getElementById('cut-y-pos').value,dir:document.getElementById('cut-y-dir').value};
 cfg.cutZ={on:document.getElementById('cut-z-on').checked,pos:document.getElementById('cut-z-pos').value,dir:document.getElementById('cut-z-dir').value};
+cfg.rotationCut={
+on:document.getElementById('rot-cut-on').checked,
+axis:document.getElementById('rot-cut-axis').value,
+angle:document.getElementById('rot-cut-angle').value,
+dir:document.getElementById('rot-cut-dir').value,
+refA:document.getElementById('rot-cut-ref-a').value,
+refB:document.getElementById('rot-cut-ref-b').value
+};
 cfg.measMode=document.getElementById('meas-mode').value;
 cfg.xyCurves=cfgClone(xyCurves);
 cfg.xySheets=cfgClone(xySheets);
@@ -12298,19 +12574,30 @@ if(cfg.cutX){
 document.getElementById('cut-x-on').checked=cfg.cutX.on;
 document.getElementById('cut-x-pos').value=cfg.cutX.pos;
 document.getElementById('cut-x-dir').value=cfg.cutX.dir;
-if(cfg.cutX.on)updateCutPlane('x');
+updateCutPlane('x');
 }
 if(cfg.cutY){
 document.getElementById('cut-y-on').checked=cfg.cutY.on;
 document.getElementById('cut-y-pos').value=cfg.cutY.pos;
 document.getElementById('cut-y-dir').value=cfg.cutY.dir;
-if(cfg.cutY.on)updateCutPlane('y');
+updateCutPlane('y');
 }
 if(cfg.cutZ){
 document.getElementById('cut-z-on').checked=cfg.cutZ.on;
 document.getElementById('cut-z-pos').value=cfg.cutZ.pos;
 document.getElementById('cut-z-dir').value=cfg.cutZ.dir;
-if(cfg.cutZ.on)updateCutPlane('z');
+updateCutPlane('z');
+}
+if(cfg.rotationCut){
+document.getElementById('rot-cut-on').checked=cfg.rotationCut.on;
+document.getElementById('rot-cut-axis').value=cfg.rotationCut.axis||'x';
+document.getElementById('rot-cut-angle').value=(cfg.rotationCut.angle!==undefined&&cfg.rotationCut.angle!==null)?cfg.rotationCut.angle:'0';
+document.getElementById('rot-cut-dir').value=(cfg.rotationCut.dir==='-')?'-':'+';
+document.getElementById('rot-cut-ref-a').value=(cfg.rotationCut.refA!==undefined&&cfg.rotationCut.refA!==null)?cfg.rotationCut.refA:'50';
+document.getElementById('rot-cut-ref-b').value=(cfg.rotationCut.refB!==undefined&&cfg.rotationCut.refB!==null)?cfg.rotationCut.refB:'50';
+updateRotationCut();
+}else{
+updateRotationCutUi(cutPlanes.rotation);
 }
 // Measure
 if(cfg.measMode){document.getElementById('meas-mode').value=cfg.measMode;setMeasMode(cfg.measMode);}
