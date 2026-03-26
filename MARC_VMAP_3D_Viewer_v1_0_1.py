@@ -1961,8 +1961,7 @@ Scroll Wheel: Zoom
 <span style="font-size:10px;color:#555;font-weight:600">Angle 2</span>
 <button type="button" id="rot-cut-angle2-toggle" onclick="toggleRotationCutAngle2()" style="min-width:58px;padding:2px 10px;font-size:10px;border:2px solid #B71C1C;border-radius:4px;background:#F44336;color:#fff;font-weight:700;cursor:pointer">Off</button>
 </div>
-<div class="range-row" id="rot-cut-angle2-row" style="display:none"><span style="color:#2E7D32;font-weight:700">Angle 2:</span><input type="range" id="rot-cut-angle2" min="0" max="360" value="0" step="1" oninput="updateRotationCut()" style="accent-color:#43A047"><span class="rv" id="rot-cut-angle2-val" style="color:#2E7D32">0&deg;</span>
-<select id="rot-cut-dir2" onchange="updateRotationCut()" title="Rotation direction 2" style="width:40px;font-size:9px;padding:1px;border:1px solid #43A047;border-radius:3px;background:#E8F5E9;color:#1B5E20"><option value="+">+</option><option value="-">-</option></select></div>
+<div class="range-row" id="rot-cut-angle2-row" style="display:none"><span style="color:#2E7D32;font-weight:700">Angle 2:</span><input type="range" id="rot-cut-angle2" min="0" max="180" value="0" step="1" oninput="updateRotationCut()" style="accent-color:#43A047"><span class="rv" id="rot-cut-angle2-val" style="color:#2E7D32">0&deg;</span></div>
 <div style="font-size:10px;color:#666;margin:6px 0 2px 0">Move Reference</div>
 <div class="range-row"><span id="rot-cut-ref-a-lbl">Y ref:</span><input type="range" id="rot-cut-ref-a" min="0" max="100" value="50" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-ref-a-val">50%</span></div>
 <div class="range-row"><span id="rot-cut-ref-b-lbl">Z ref:</span><input type="range" id="rot-cut-ref-b" min="0" max="100" value="50" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-ref-b-val">50%</span></div>
@@ -7130,20 +7129,12 @@ var rotCut=getRotationCutData();
 if(rotCut&&rotCut.enabled){
 if(rotCut.state.angle2On&&rotCut.secondary){
 cuts.push({
-type:'rotation-split',
-side:'positive',
-normal:[rotCut.primary.clipNormal.x,rotCut.primary.clipNormal.y,rotCut.primary.clipNormal.z],
-constant:rotCut.primary.constant,
-splitDir:[rotCut.splitDir.x,rotCut.splitDir.y,rotCut.splitDir.z],
-refPoint:[rotCut.refPoint.x,rotCut.refPoint.y,rotCut.refPoint.z]
-});
-cuts.push({
-type:'rotation-split',
-side:'negative',
-normal:[rotCut.secondary.clipNormal.x,rotCut.secondary.clipNormal.y,rotCut.secondary.clipNormal.z],
-constant:rotCut.secondary.constant,
-splitDir:[rotCut.splitDir.x,rotCut.splitDir.y,rotCut.splitDir.z],
-refPoint:[rotCut.refPoint.x,rotCut.refPoint.y,rotCut.refPoint.z]
+type:'rotation-sector',
+axisDir:[rotCut.axisDir.x,rotCut.axisDir.y,rotCut.axisDir.z],
+refPoint:[rotCut.refPoint.x,rotCut.refPoint.y,rotCut.refPoint.z],
+baseVisible:[rotCut.baseVisible.x,rotCut.baseVisible.y,rotCut.baseVisible.z],
+angle1:rotCut.primarySignedAngle,
+angle2:rotCut.secondarySignedAngle
 });
 }else{
 cuts.push({
@@ -7156,12 +7147,28 @@ constant:rotCut.constant
 return cuts;
 }
 function getCutSignedDistance(p,cut){
-if(!p||!cut||!cut.normal)return -Infinity;
-if(cut.type==='rotation-split'&&cut.splitDir&&cut.refPoint){
-var side=((p[0]-cut.refPoint[0])*cut.splitDir[0])+((p[1]-cut.refPoint[1])*cut.splitDir[1])+((p[2]-cut.refPoint[2])*cut.splitDir[2]);
-if(cut.side==='positive'&&side<-1e-10)return Infinity;
-if(cut.side==='negative'&&side>1e-10)return Infinity;
+if(!p||!cut)return -Infinity;
+if(cut.type==='rotation-sector'&&cut.axisDir&&cut.refPoint&&cut.baseVisible){
+var ax=cut.axisDir[0],ay=cut.axisDir[1],az=cut.axisDir[2];
+var px0=p[0]-cut.refPoint[0],py0=p[1]-cut.refPoint[1],pz0=p[2]-cut.refPoint[2];
+var dotAxis=(px0*ax)+(py0*ay)+(pz0*az);
+var qx=px0-dotAxis*ax,qy=py0-dotAxis*ay,qz=pz0-dotAxis*az;
+var qLen=Math.sqrt(qx*qx+qy*qy+qz*qz);
+if(!(qLen>1e-12))return 1;
+qx/=qLen;qy/=qLen;qz/=qLen;
+var bx=cut.baseVisible[0],by=cut.baseVisible[1],bz=cut.baseVisible[2];
+var bLen=Math.sqrt(bx*bx+by*by+bz*bz);
+if(!(bLen>1e-12))return -Infinity;
+bx/=bLen;by/=bLen;bz/=bLen;
+var cx=(by*qz)-(bz*qy),cy=(bz*qx)-(bx*qz),cz=(bx*qy)-(by*qx);
+var phi=Math.atan2((ax*cx)+(ay*cy)+(az*cz),(bx*qx)+(by*qy)+(bz*qz));
+var delta=Math.atan2(Math.sin(cut.angle2-cut.angle1),Math.cos(cut.angle2-cut.angle1));
+var mid=cut.angle1+(delta*0.5);
+var diff=Math.atan2(Math.sin(phi-mid),Math.cos(phi-mid));
+var half=(Math.PI-Math.abs(delta))*0.5;
+return half-Math.abs(diff);
 }
+if(!cut.normal)return -Infinity;
 return (p[0]*cut.normal[0])+(p[1]*cut.normal[1])+(p[2]*cut.normal[2])+cut.constant;
 }
 function isPointVisibleByCuts(p,cuts){
@@ -12901,7 +12908,7 @@ xyUpdatePlotSize();
 // ==================== VIEW CUT MANAGER ====================
 var clipEnabled=[false,false,false];
 var clipPlanesThree=[new THREE.Plane(),new THREE.Plane(),new THREE.Plane()];
-var rotationClipPlaneThree=new THREE.Plane();
+var rotationClipPlaneThree=new THREE.Plane(),rotationClipPlaneThree2=new THREE.Plane();
 var activeClipPlanesArr=[];
 function anyCutEnabled(){return clipEnabled[0]||clipEnabled[1]||clipEnabled[2]||!!(cutPlanes.rotation&&cutPlanes.rotation.on);}
 function clampCutPercent(v){
@@ -12971,14 +12978,15 @@ planeLabel:'XY'
 }
 function sanitizeRotationCutState(src){
 src=src||{};
+var dir=(src.dir==='-')?'-':'+';
 return{
 on:!!src.on,
 axis:(src.axis==='y'||src.axis==='z')?src.axis:'x',
 angle:Math.max(0,Math.min(360,parseInt(src.angle,10)||0)),
-dir:(src.dir==='-')?'-':'+',
+dir:dir,
 angle2On:!!src.angle2On,
-angle2:Math.max(0,Math.min(360,parseInt(src.angle2,10)||0)),
-dir2:(src.dir2==='-')?'-':'+',
+angle2:Math.max(0,Math.min(180,parseInt(src.angle2,10)||0)),
+dir2:dir,
 refA:clampCutPercent(src.refA),
 refB:clampCutPercent(src.refB),
 hidePlane:!!src.hidePlane
@@ -12992,7 +13000,6 @@ var angleEl=document.getElementById('rot-cut-angle');
 var dirEl=document.getElementById('rot-cut-dir');
 var angle2Btn=document.getElementById('rot-cut-angle2-toggle');
 var angle2El=document.getElementById('rot-cut-angle2');
-var dir2El=document.getElementById('rot-cut-dir2');
 var refAEl=document.getElementById('rot-cut-ref-a');
 var refBEl=document.getElementById('rot-cut-ref-b');
 var hidePlaneEl=document.getElementById('rot-cut-hide-plane');
@@ -13003,7 +13010,7 @@ angle:angleEl?angleEl.value:state.angle,
 dir:dirEl?dirEl.value:state.dir,
 angle2On:angle2Btn?(angle2Btn.getAttribute('data-on')==='1'):state.angle2On,
 angle2:angle2El?angle2El.value:state.angle2,
-dir2:dir2El?dir2El.value:state.dir2,
+dir2:dirEl?dirEl.value:state.dir,
 refA:refAEl?refAEl.value:state.refA,
 refB:refBEl?refBEl.value:state.refB,
 hidePlane:hidePlaneEl?hidePlaneEl.checked:state.hidePlane
@@ -13030,7 +13037,6 @@ var dirEl=document.getElementById('rot-cut-dir');
 var angle2Row=document.getElementById('rot-cut-angle2-row');
 var angle2El=document.getElementById('rot-cut-angle2');
 var angle2Val=document.getElementById('rot-cut-angle2-val');
-var dir2El=document.getElementById('rot-cut-dir2');
 var refAEl=document.getElementById('rot-cut-ref-a');
 var refBEl=document.getElementById('rot-cut-ref-b');
 var refALbl=document.getElementById('rot-cut-ref-a-lbl');
@@ -13052,7 +13058,6 @@ updateRotationCutAngle2Button(state.angle2On);
 if(angle2Row)angle2Row.style.display=state.angle2On?'flex':'none';
 if(angle2El)angle2El.value=String(state.angle2);
 if(angle2Val)angle2Val.innerHTML=String(state.angle2)+'&deg;';
-if(dir2El)dir2El.value=state.dir2;
 if(refAEl)refAEl.value=String(state.refA);
 if(refBEl)refBEl.value=String(state.refB);
 if(refALbl)refALbl.textContent=info.refLabels[0];
@@ -13066,7 +13071,7 @@ function toggleRotationCutAngle2(force){
 var state=readRotationCutStateFromUi();
 var next=(force===undefined)?(!state.angle2On):!!force;
 if(next&&!state.angle2On){
-state.angle2=state.angle;
+state.angle2=0;
 state.dir2=state.dir;
 }
 state.angle2On=next;
@@ -13197,11 +13202,12 @@ setAxisCutVisualVisibility(axis,true);
 });
 }
 function buildRotationCutPlaneData(axisDir,baseNormal,refPoint,angleDeg,dirValue){
-var planeNormal=baseNormal.clone().normalize();
+var baseNormalUnit=baseNormal.clone().normalize();
+var planeNormal=baseNormalUnit.clone();
 var signedAngle=((dirValue==='-')?-1:1)*((parseFloat(angleDeg)||0)*Math.PI/180.0);
 planeNormal.applyAxisAngle(axisDir,signedAngle).normalize();
-var clipNormal=planeNormal.clone().negate();
-var constant=planeNormal.dot(refPoint);
+var clipNormal=(dirValue==='-')?planeNormal.clone():planeNormal.clone().negate();
+var constant=-clipNormal.dot(refPoint);
 var planeDir=planeNormal.clone().cross(axisDir).normalize();
 if(planeDir.lengthSq()<1e-16){
 planeDir=new THREE.Vector3(0,1,0).cross(axisDir).normalize();
@@ -13212,6 +13218,42 @@ planeNormal:planeNormal,
 clipNormal:clipNormal,
 constant:constant,
 planeDir:planeDir
+};
+}
+function getRotationCutSignedAngleRad(angleDeg,dirValue){
+return ((dirValue==='-')?-1:1)*((parseFloat(angleDeg)||0)*Math.PI/180.0);
+}
+function getRotationCutSecondaryAngleDeg(state){
+state=sanitizeRotationCutState(state||{});
+return (parseFloat(state.angle)||0)+(parseFloat(state.angle2)||0);
+}
+function chooseRotationCutSectorMid(axisDir,baseNormal,angle1,dir1,angle2,dir2){
+if(!axisDir||!baseNormal)return null;
+var axis=axisDir.clone().normalize();
+var base=baseNormal.clone().normalize();
+if(axis.lengthSq()<1e-16||base.lengthSq()<1e-16)return null;
+var visibleBase=(dir1==='-')?base:base.clone().negate();
+var sAngle1=getRotationCutSignedAngleRad(angle1,dir1);
+var sAngle2=getRotationCutSignedAngleRad(angle2,dir2);
+var delta=Math.atan2(Math.sin(sAngle2-sAngle1),Math.cos(sAngle2-sAngle1));
+var midAngle=sAngle1+(delta*0.5);
+var sectorMid=visibleBase.clone().applyAxisAngle(axis,midAngle);
+if(sectorMid.lengthSq()<1e-16)return null;
+return sectorMid.normalize();
+}
+function orientRotationCutPlaneToSector(planeData,sectorMid){
+if(!planeData||!sectorMid||sectorMid.lengthSq()<1e-16)return planeData;
+var clipNormal=planeData.clipNormal.clone();
+var constant=planeData.constant;
+if(clipNormal.dot(sectorMid)<0){
+clipNormal.negate();
+constant=-constant;
+}
+return{
+planeNormal:planeData.planeNormal,
+clipNormal:clipNormal,
+constant:constant,
+planeDir:planeData.planeDir
 };
 }
 function getRotationCutData(){
@@ -13228,8 +13270,18 @@ var refAInfo=getAxisRangeInfo(info.refAxes[0]);
 var refBInfo=getAxisRangeInfo(info.refAxes[1]);
 refPoint[info.refAxes[0]]=refAInfo.min+(state.refA/100)*refAInfo.range;
 refPoint[info.refAxes[1]]=refBInfo.min+(state.refB/100)*refBInfo.range;
-var primary=buildRotationCutPlaneData(axisDir,info.baseNormal,refPoint,state.angle,state.dir);
-var secondary=state.angle2On?buildRotationCutPlaneData(axisDir,info.baseNormal,refPoint,state.angle2,state.dir2):null;
+var primaryAngle=state.angle;
+var secondaryAngle=state.angle2On?getRotationCutSecondaryAngleDeg(state):null;
+var baseVisible=(state.dir==='-')?info.baseNormal.clone():info.baseNormal.clone().negate();
+var primary=buildRotationCutPlaneData(axisDir,info.baseNormal,refPoint,primaryAngle,state.dir);
+var secondary=state.angle2On?buildRotationCutPlaneData(axisDir,info.baseNormal,refPoint,secondaryAngle,state.dir2):null;
+if(state.angle2On&&secondary){
+var sectorMid=chooseRotationCutSectorMid(axisDir,info.baseNormal,primaryAngle,state.dir,secondaryAngle,state.dir2);
+if(sectorMid){
+primary=orientRotationCutPlaneToSector(primary,sectorMid);
+secondary=orientRotationCutPlaneToSector(secondary,sectorMid);
+}
+}
 var splitDir=info.baseNormal.clone().cross(axisDir).normalize();
 if(splitDir.lengthSq()<1e-16)splitDir=primary.planeDir.clone();
 var axisInfo=getAxisRangeInfo(info.axis);
@@ -13246,6 +13298,11 @@ enabled:true,
 state:state,
 info:info,
 axisDir:axisDir,
+baseVisible:baseVisible,
+primaryAngle:primaryAngle,
+secondaryAngle:secondaryAngle,
+primarySignedAngle:getRotationCutSignedAngleRad(primaryAngle,state.dir),
+secondarySignedAngle:state.angle2On?getRotationCutSignedAngleRad(secondaryAngle,state.dir2):null,
 planeNormal:primary.planeNormal,
 clipNormal:primary.clipNormal,
 constant:primary.constant,
@@ -13395,11 +13452,9 @@ function resetRotationCutAngle(){
 var angleEl=document.getElementById('rot-cut-angle');
 var dirEl=document.getElementById('rot-cut-dir');
 var angle2El=document.getElementById('rot-cut-angle2');
-var dir2El=document.getElementById('rot-cut-dir2');
 if(angleEl)angleEl.value='0';
 if(dirEl)dirEl.value='+';
 if(angle2El)angle2El.value='0';
-if(dir2El)dir2El.value='+';
 updateRotationCut();
 }
 function computeClipPlane(axis){
@@ -13417,9 +13472,11 @@ updateAxisCutVisuals();
 var rotData=getRotationCutData();
 updateRotationCutVisuals(rotData);
 if(rotData&&rotData.enabled){
-if(!(rotData.state&&rotData.state.angle2On)){
-rotationClipPlaneThree=new THREE.Plane(rotData.clipNormal.clone(),rotData.constant);
+rotationClipPlaneThree=new THREE.Plane(rotData.primary.clipNormal.clone(),rotData.primary.constant);
 activeClipPlanesArr.push(rotationClipPlaneThree);
+if(rotData.state&&rotData.state.angle2On&&rotData.secondary){
+rotationClipPlaneThree2=new THREE.Plane(rotData.secondary.clipNormal.clone(),rotData.secondary.constant);
+activeClipPlanesArr.push(rotationClipPlaneThree2);
 }
 }
 var cArr=activeClipPlanesArr.length>0?activeClipPlanesArr:[];
@@ -13474,9 +13531,7 @@ updateRotationCutUi(cutPlanes.rotation);
 var rotHideEl=document.getElementById('rot-cut-hide-plane');
 if(rotHideEl)rotHideEl.checked=false;
 var rotAngle2El=document.getElementById('rot-cut-angle2');
-var rotDir2El=document.getElementById('rot-cut-dir2');
 if(rotAngle2El)rotAngle2El.value='0';
-if(rotDir2El)rotDir2El.value='+';
 updateAxisCutVisuals();
 updateRotationCutVisuals(null);
 activeClipPlanesArr=[];
@@ -14155,7 +14210,6 @@ document.getElementById('rot-cut-axis').value=cfg.rotationCut.axis||'x';
 document.getElementById('rot-cut-angle').value=(cfg.rotationCut.angle!==undefined&&cfg.rotationCut.angle!==null)?cfg.rotationCut.angle:'0';
 document.getElementById('rot-cut-dir').value=(cfg.rotationCut.dir==='-')?'-':'+';
 if(document.getElementById('rot-cut-angle2'))document.getElementById('rot-cut-angle2').value=(cfg.rotationCut.angle2!==undefined&&cfg.rotationCut.angle2!==null)?cfg.rotationCut.angle2:document.getElementById('rot-cut-angle').value;
-if(document.getElementById('rot-cut-dir2'))document.getElementById('rot-cut-dir2').value=(cfg.rotationCut.dir2==='-')?'-':'+';
 if(document.getElementById('rot-cut-angle2-toggle'))document.getElementById('rot-cut-angle2-toggle').setAttribute('data-on',cfg.rotationCut.angle2On?'1':'0');
 document.getElementById('rot-cut-ref-a').value=(cfg.rotationCut.refA!==undefined&&cfg.rotationCut.refA!==null)?cfg.rotationCut.refA:'50';
 document.getElementById('rot-cut-ref-b').value=(cfg.rotationCut.refB!==undefined&&cfg.rotationCut.refB!==null)?cfg.rotationCut.refB:'50';
@@ -14344,6 +14398,10 @@ class App:
         self.export_centroid_var = tk.BooleanVar(value=False)
         self.export_all_edges_var = tk.BooleanVar(value=False)
         self.output_summary_text = "Select VMAP file first"
+        self._default_window_height = 740
+        self._output_listbox_base_rows = 6
+        self._output_listbox_current_rows = self._output_listbox_base_rows
+        self._output_resize_after_id = None
         
         self.setup()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -14387,6 +14445,53 @@ class App:
             self.mode_static_rb.config(state=state)
         if hasattr(self, 'mode_harmonic_rb') and self.mode_harmonic_rb:
             self.mode_harmonic_rb.config(state=state)
+
+    def _schedule_output_list_resize(self):
+        if self._output_resize_after_id is not None:
+            try:
+                self.root.after_cancel(self._output_resize_after_id)
+            except:
+                pass
+        self._output_resize_after_id = self.root.after(30, self._apply_output_list_resize)
+
+    def _sync_main_canvas_window_size(self, target_width=None):
+        if not hasattr(self, '_main_canvas') or not self._main_canvas:
+            return
+        if not hasattr(self, '_main_canvas_window') or self._main_canvas_window is None:
+            return
+        if not hasattr(self, '_main_content_frame') or not self._main_content_frame:
+            return
+        try:
+            canvas = self._main_canvas
+            frame = self._main_content_frame
+            width = max(1, int(target_width if target_width is not None else canvas.winfo_width()))
+            canvas_h = max(1, int(canvas.winfo_height()))
+            req_h = max(1, int(frame.winfo_reqheight()))
+            target_h = max(canvas_h, req_h)
+            canvas.itemconfig(self._main_canvas_window, width=width, height=target_h)
+            canvas.configure(scrollregion=(0, 0, width, target_h))
+        except:
+            pass
+
+    def _apply_output_list_resize(self):
+        self._output_resize_after_id = None
+        if not hasattr(self, 'output_listbox') or not self.output_listbox:
+            return
+        try:
+            current_height = max(1, int(self.root.winfo_height()))
+        except:
+            return
+        base_height = max(1, int(self._default_window_height))
+        base_rows = max(1, int(self._output_listbox_base_rows))
+        target_rows = max(base_rows, int(round(float(base_rows) * float(current_height) / float(base_height))))
+        if target_rows != self._output_listbox_current_rows:
+            self.output_listbox.config(height=target_rows)
+            self._output_listbox_current_rows = target_rows
+        self._sync_main_canvas_window_size()
+
+    def _on_root_resize(self, event):
+        if event.widget is self.root:
+            self._schedule_output_list_resize()
     
     def on_closing(self):
         self._close_reader()
@@ -14422,15 +14527,18 @@ class App:
         # Inner frame for all content
         mf = tk.Frame(main_canvas)
         canvas_window = main_canvas.create_window((0, 0), window=mf, anchor='nw')
+        self._main_canvas = main_canvas
+        self._main_canvas_window = canvas_window
+        self._main_content_frame = mf
         
         # Make inner frame width follow canvas width
         def on_canvas_configure(event):
-            main_canvas.itemconfig(canvas_window, width=event.width)
+            self._sync_main_canvas_window_size(target_width=event.width)
         main_canvas.bind('<Configure>', on_canvas_configure)
         
         # Update scroll region when content changes
         def on_frame_configure(event):
-            main_canvas.configure(scrollregion=main_canvas.bbox('all'))
+            self._sync_main_canvas_window_size()
         mf.bind('<Configure>', on_frame_configure)
         
         # Mouse wheel scrolling (Windows + Linux)
@@ -14443,7 +14551,7 @@ class App:
         main_canvas.bind_all('<MouseWheel>', on_mousewheel)
         main_canvas.bind_all('<Button-4>', on_mousewheel_linux_up)
         main_canvas.bind_all('<Button-5>', on_mousewheel_linux_down)
-        self._main_canvas = main_canvas
+        self.root.bind('<Configure>', self._on_root_resize, add='+')
         
         # STEP 1: File Selection - LabelFrame
         step1 = tk.LabelFrame(mf, text="Step 1: Select VMAP File",
@@ -14513,7 +14621,7 @@ class App:
         scrollbar = tk.Scrollbar(lf)
         scrollbar.pack(side='right', fill='y')
         
-        self.output_listbox = tk.Listbox(lf, height=6, font=('Courier', 9),
+        self.output_listbox = tk.Listbox(lf, height=self._output_listbox_base_rows, font=('Courier', 9),
                                           yscrollcommand=scrollbar.set,
                                           selectmode='single', bg='#f5f5f5',
                                           relief='sunken', bd=1)
@@ -14521,6 +14629,7 @@ class App:
         scrollbar.config(command=self.output_listbox.yview)
         
         self.output_listbox.bind('<<ListboxSelect>>', self.on_output_selected)
+        self.root.after_idle(self._apply_output_list_resize)
         
         # STEP 4: Generate - LabelFrame
         step4 = tk.LabelFrame(mf, text="Step 4: Generate 3D Viewer",
@@ -14553,8 +14662,8 @@ class App:
         
         # Bottom bar: Exit button + watermark
         bottom_frame = tk.Frame(mf)
-        bottom_frame.pack(fill='x', pady=(5, 0))
-        
+        bottom_frame.pack(fill='x', padx=8, pady=(8, 4))
+
         tk.Button(bottom_frame, text="Exit", command=self.on_closing,
                   font=('Arial', 10, 'bold'), bg='#666', fg='white',
                   width=10, height=1).pack(side='right')

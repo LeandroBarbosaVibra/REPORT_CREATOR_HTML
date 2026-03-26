@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 T16 3D VIEWER v1.0.1 - Vibracoustic EU FEA Department
 NEW: GUI with LabelFrame steps, progress title, watermark, Guideline button
@@ -53,7 +53,7 @@ POST_FILE_DIALOG_TYPES = [
     ("Marc T19", "*.t19"),
     ("All", "*.*"),
 ]
-CACHE_SCHEMA_VERSION = "v4_1_7_harmonic_fix_2026_03_08"
+CACHE_SCHEMA_VERSION = "t16_viewer_sync_2026_03_26_vmap_parity1"
 
 def make_chunked_json_script(base_id, json_text, chunk_size=JSON_SCRIPT_CHUNK_SIZE):
     if not isinstance(json_text, str):
@@ -94,6 +94,27 @@ def save_export_cache(cache_path, data):
     except Exception:
         return False
 
+def pack_float32_b64(values):
+    if values is None:
+        return None
+    try:
+        import base64 as _b64
+        arr = np.nan_to_num(np.asarray(values, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        return _b64.b64encode(arr.tobytes()).decode('ascii')
+    except Exception:
+        return None
+
+
+def pack_norm_i16_b64(norm_values):
+    if norm_values is None:
+        return None
+    try:
+        import base64 as _b64
+        arr = np.nan_to_num(np.asarray(norm_values, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        q = np.clip(np.round(arr * 32767.0), 0, 32767).astype(np.int16)
+        return _b64.b64encode(q.tobytes()).decode('ascii')
+    except Exception:
+        return None
 
 def get_global_cache_dir(source_file):
     try:
@@ -1403,8 +1424,7 @@ class T16Reader:
 # HTML GENERATOR
 # =============================================================================
 
-def generate_html(reader, progress_callback=None, selected_output=None, viewer_mode="static",
-                  export_centroid=True, export_all_edges=False):
+def generate_html(reader, progress_callback=None, selected_output=None, viewer_mode="static", export_centroid=True, export_all_edges=False):
     
     def update_progress(percent, message=""):
         if progress_callback:
@@ -1413,6 +1433,8 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     mode = (viewer_mode or "static").strip().lower()
     harmonic_mode = (mode == "harmonic")
     export_all_edges = bool(export_all_edges)
+    if harmonic_mode:
+        export_centroid = False
 
     update_progress(5, "Preparing data...")
     
@@ -1439,48 +1461,37 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     update_progress(10, "Processing nodes...")
     # Clean NaN/Inf from node coordinates before JSON serialization
     original_nodes = np.nan_to_num(original_nodes, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # --- Harmonic base displacement subtraction ---
-    # In Marc harmonic analysis on pre-stressed structures, harmonic sub-increments
-    # store TOTAL displacement (u_static + u_harmonic).  The viewer oscillates
-    # displacement with sin(phase), so oscillating the static component creates
-    # hyper-deformed elements.  Fix: shift the reference mesh to the pre-stressed
-    # shape and store only the harmonic perturbation.
-    _harmonic_base_disp = None
-    if harmonic_mode:
-        _harmonic_base_disp = reader.get_harmonic_base_displacement()
-        if _harmonic_base_disp is not None:
-            original_nodes = original_nodes + _harmonic_base_disp.astype(original_nodes.dtype)
-            original_nodes = np.nan_to_num(original_nodes, nan=0.0, posinf=0.0, neginf=0.0)
-
     original_nodes_json = json.dumps(original_nodes.tolist(), separators=(',', ':'))
     
     update_progress(15, "Getting outputs...")
     all_var_info = reader.get_available_variables()
     all_available_outputs = sorted(all_var_info.keys())
     
+    virtual_displacement_output = False
     if harmonic_mode:
         if 'Displacement' not in all_available_outputs:
             raise ValueError("Harmonic mode requires 'Displacement' output in .t16/.t19 file.")
-        available_outputs = ['Displacement']
+        export_outputs = ['Displacement']
+        viewer_outputs = ['Displacement']
         default_var = 'Displacement'
     elif selected_output and selected_output in all_available_outputs:
-        # Export selected output for coloring + keep Displacement available for deformation checks/debug.
-        available_outputs = [selected_output]
-        if 'Displacement' not in available_outputs and 'Displacement' in all_available_outputs:
-            available_outputs.append('Displacement')
+        # Export selected output only. Deformation nodes are exported separately by state.
+        export_outputs = [selected_output]
+        viewer_outputs = [selected_output]
         default_var = selected_output
+        if selected_output != 'Displacement' and 'Displacement' in all_available_outputs:
+            viewer_outputs.append('Displacement')
+            virtual_displacement_output = True
     else:
-        available_outputs = all_available_outputs
-        default_var = 'Displacement' if 'Displacement' in available_outputs else (available_outputs[0] if available_outputs else None)
+        export_outputs = all_available_outputs
+        viewer_outputs = list(all_available_outputs)
+        default_var = 'Displacement' if 'Displacement' in viewer_outputs else (viewer_outputs[0] if viewer_outputs else None)
     
     # Detect native data locations (element vs node) for each variable
     var_locations = reader.get_variable_locations()
+    if 'Displacement' in viewer_outputs and 'Displacement' not in var_locations:
+        var_locations['Displacement'] = 'node'
     state_names = sorted(reader.states.keys(), key=natural_sort_key)
-
-    # Automatic cache for processed per-state output payloads.
-    use_cache = True
-    # Build cache key for processed per-state output payloads.
     src_size = 0
     src_mtime = 0.0
     try:
@@ -1495,15 +1506,14 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
         "source_mtime": src_mtime,
         "viewer_mode": mode,
         "export_centroid": bool(export_centroid),
-        "available_outputs": list(available_outputs),
+        "outputs": list(export_outputs),
         "states": list(state_names),
     }
     cache_path = build_export_cache_path(base)
     cached_bundle = None
-    if use_cache:
-        cached_data = load_export_cache(cache_path)
-        if cached_data and cached_data.get("key") == cache_key and isinstance(cached_data.get("bundle"), dict):
-            cached_bundle = cached_data.get("bundle")
+    cached_data = load_export_cache(cache_path)
+    if cached_data and cached_data.get("key") == cache_key and isinstance(cached_data.get("bundle"), dict):
+        cached_bundle = cached_data.get("bundle")
 
     if cached_bundle:
         update_progress(20, "Using cached processed data...")
@@ -1513,19 +1523,11 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
         disp_max_by_state = cached_bundle.get("disp_max_by_state", {})
         all_outputs_data = cached_bundle.get("all_outputs_data", {})
     else:
-        # Ensure state variables are populated before exporting per-state payloads.
-        if available_outputs:
-            update_progress(18, "Preloading selected outputs...")
-            try:
-                reader.load_selected_outputs(available_outputs)
-            except Exception as preload_err:
-                print("[WARNING] Output preload failed: {}".format(preload_err))
-
         state_meta = {}
         state_var_keys = {}
         disp_nodes_by_state = {}
         disp_max_by_state = {}
-        
+
         update_progress(20, "Pre-processing states...")
         for sn in state_names:
             st = reader.states.get(sn, {})
@@ -1534,109 +1536,96 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
                 time_val = 0.0
             else:
                 time_val = safe_number(time_val, 0.0)
-            inc_raw = st.get('increment', 0)
-            if isinstance(inc_raw, bytes):
-                try:
-                    inc_raw = inc_raw.decode('utf-8', errors='replace')
-                except Exception:
-                    inc_raw = safe_string(inc_raw, "0")
-            if isinstance(inc_raw, str):
-                txt = inc_raw.strip()
-                if txt:
-                    inc_val = txt
-                else:
-                    inc_val = 0
-            elif is_valid_number(inc_raw):
-                inc_val = safe_number(inc_raw, 0, as_int=True)
-            else:
+            inc_val = st.get('increment', 0)
+            if not is_valid_number(inc_val):
                 inc_val = 0
-            state_meta[sn] = {'time': time_val, 'increment': inc_val}
-            # Capture variables after lazy loading.
-            st_after = reader.states.get(sn, st)
-            state_var_keys[sn] = list(st_after.get('variables', {}).keys())
-            disp_vec = None
-            try:
-                raw_disp = st_after.get('variables', {}).get('Displacement')
-                if raw_disp is not None:
-                    dv = np.asarray(raw_disp, dtype=np.float64)
-                    if dv.ndim == 2 and dv.shape[0] == original_nodes.shape[0]:
-                        if dv.shape[1] >= 3:
-                            disp_vec = dv[:, :3]
-                    elif dv.ndim == 1 and dv.size == (original_nodes.shape[0] * 3):
-                        disp_vec = dv.reshape((original_nodes.shape[0], 3))
-                    if disp_vec is not None:
-                        disp_vec = reader._canonicalize_displacement_vector(disp_vec, state_key=sn)
-                        # Isolate harmonic perturbation by removing base static displacement.
-                        if _harmonic_base_disp is not None:
-                            disp_vec = disp_vec - _harmonic_base_disp
-            except Exception:
-                disp_vec = None
+            else:
+                inc_val = safe_number(inc_val, 0, as_int=True)
+            freq_val = st.get('frequency', None)
+            if not is_valid_number(freq_val):
+                freq_val = None
+            else:
+                freq_val = safe_number(freq_val, None)
+            title_val = safe_string(st.get('title', sn), "")
+            # In harmonic exports from MARC_VMAP_GUI, MYTOTALTIME may carry the frequency value.
+            if harmonic_mode and ((freq_val is None) or (is_valid_number(freq_val) and abs(safe_number(freq_val, 0.0)) <= 1e-12)) and is_valid_number(time_val):
+                tf = safe_number(time_val, None)
+                if tf is not None and np.isfinite(tf) and abs(tf) > 1e-12:
+                    freq_val = float(tf)
+            state_meta[sn] = {'time': time_val, 'increment': inc_val, 'frequency': freq_val, 'title': title_val}
+            var_keys = list(st.get('variables', {}).keys())
+            state_var_keys[sn] = var_keys
 
-            if disp_vec is None:
-                # Fallback to deformed coordinates if displacement vector is unavailable.
-                state_nodes = reader.get_nodes(sn, 1.0, 'Displacement')
-                if state_nodes is not None:
-                    try:
-                        state_nodes = np.nan_to_num(state_nodes, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float64)
-                        disp_vec = state_nodes - original_nodes
-                    except Exception:
-                        disp_vec = None
-
-            if disp_vec is not None:
-                disp_vec = np.nan_to_num(disp_vec, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+            # Export relative displacement vectors per state. This avoids precision loss
+            # when reconstructing displacement magnitudes from large absolute coordinates.
+            state_nodes = reader.get_nodes(sn, 1.0, 'Displacement')
+            if state_nodes is not None:
+                state_nodes = np.nan_to_num(state_nodes, nan=0.0, posinf=0.0, neginf=0.0)
                 try:
-                    disp_mag = np.linalg.norm(disp_vec.astype(np.float64), axis=1)
+                    disp_vec = np.nan_to_num(state_nodes - original_nodes, nan=0.0, posinf=0.0, neginf=0.0)
+                    disp_mag = np.linalg.norm(disp_vec, axis=1)
                     disp_max = float(np.nanmax(disp_mag)) if disp_mag.size else 0.0
                     if not np.isfinite(disp_max):
                         disp_max = 0.0
                 except Exception:
+                    disp_vec = None
                     disp_max = 0.0
                 disp_max_by_state[sn] = disp_max
-                # Store displacement vectors (not absolute coordinates) to preserve tiny harmonic amplitudes.
-                disp_nodes_by_state[sn] = disp_vec.tolist()
+                b64_disp = pack_float32_b64(disp_vec) if disp_vec is not None else None
+                if b64_disp:
+                    disp_nodes_by_state[sn] = {
+                        "disp_f32_b64": b64_disp,
+                        "n_nodes": int(disp_vec.shape[0])
+                    }
+                else:
+                    disp_nodes_by_state[sn] = None
             else:
                 disp_max_by_state[sn] = 0.0
                 disp_nodes_by_state[sn] = None
-        
-        update_progress(25, "Processing {} output(s)...".format(len(available_outputs)))
-        
+
+        update_progress(25, "Processing {} output(s)...".format(len(export_outputs)))
+
         # Build separate dataset for EACH output variable
         # CRITICAL: Node positions ALWAYS use 'Displacement' variable
         all_outputs_data = {}
-        for idx, var_name in enumerate(available_outputs):
-            percent = 25 + (35 * idx / max(1, len(available_outputs)))
+        for idx, var_name in enumerate(export_outputs):
+            percent = 25 + (35 * idx / max(1, len(export_outputs)))
             update_progress(percent, "Processing: {} ...".format(var_name))
-            
+
             output_states = {}
             for sn in state_names:
                 try:
-                    # ALWAYS use 'Displacement' for node positions
-                    state_colors = reader.get_values(sn, var_name)
-                    if state_colors is None:
+                    if var_name not in state_var_keys.get(sn, []):
                         continue
-                    
-                    # Normalize colors to 0-1 per state (nodal)
-                    colors_u16 = None
+
+                    state_colors = reader.get_values(sn, var_name)
+
+                    colors_i16_b64 = None
+                    color_count = 0
                     color_min = 0.0
                     color_max = 1.0
-                    try:
-                        sc = np.nan_to_num(state_colors, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
-                        vmin = float(np.nanmin(sc))
-                        vmax = float(np.nanmax(sc))
-                        if not (np.isfinite(vmin) and np.isfinite(vmax)):
-                            vmin, vmax = 0.0, 1.0
-                        if abs(vmax - vmin) < 1e-10:
-                            vmax = vmin + 1.0
-                        colors_normalized = np.clip((sc - vmin) / (vmax - vmin), 0, 1).astype(np.float32)
-                        colors_u16 = pack_normalized_u16(colors_normalized)
-                        color_min = vmin
-                        color_max = vmax
-                    except Exception:
-                        colors_u16 = None
-                        color_min = 0.0
-                        color_max = 1.0
-                    
-                    centroid_u16 = None
+                    if state_colors is not None:
+                        try:
+                            sc = np.nan_to_num(state_colors, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+                            vmin = float(np.nanmin(sc))
+                            vmax = float(np.nanmax(sc))
+                            if not (np.isfinite(vmin) and np.isfinite(vmax)):
+                                vmin, vmax = 0.0, 1.0
+                            if abs(vmax - vmin) < 1e-10:
+                                vmax = vmin + 1.0
+                            colors_normalized = np.clip((sc - vmin) / (vmax - vmin), 0, 1).astype(np.float32)
+                            colors_i16_b64 = pack_norm_i16_b64(colors_normalized)
+                            color_count = int(colors_normalized.size)
+                            color_min = vmin
+                            color_max = vmax
+                        except Exception:
+                            colors_i16_b64 = None
+                            color_count = 0
+                            color_min = 0.0
+                            color_max = 1.0
+
+                    centroid_i16_b64 = None
+                    centroid_count = 0
                     centroid_min = 0.0
                     centroid_max = 1.0
                     if export_centroid:
@@ -1651,52 +1640,57 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
                                 if abs(cvmax - cvmin) < 1e-10:
                                     cvmax = cvmin + 1.0
                                 centroid_normalized = np.clip((cc - cvmin) / (cvmax - cvmin), 0, 1).astype(np.float32)
-                                centroid_u16 = pack_normalized_u16(centroid_normalized)
+                                centroid_i16_b64 = pack_norm_i16_b64(centroid_normalized)
+                                centroid_count = int(centroid_normalized.size)
                                 centroid_min = cvmin
                                 centroid_max = cvmax
                             except Exception:
-                                centroid_u16 = None
+                                centroid_i16_b64 = None
+                                centroid_count = 0
                                 centroid_min = 0.0
                                 centroid_max = 1.0
-                    
-                    meta = state_meta.get(sn, {'time': 0.0, 'increment': 0})
+
+                    meta = state_meta.get(sn, {'time': 0.0, 'increment': 0, 'frequency': None, 'title': ''})
                     item = {
                         'time': meta['time'],
                         'increment': meta['increment'],
-                        'colors_u16': colors_u16,
+                        'frequency': meta.get('frequency'),
+                        'title': meta.get('title', ''),
+                        'colors_i16_b64': colors_i16_b64,
+                        'color_count': color_count,
                         'color_min': color_min,
                         'color_max': color_max
                     }
                     if export_centroid:
-                        item['centroid_u16'] = centroid_u16
+                        item['centroid_i16_b64'] = centroid_i16_b64
+                        item['centroid_count'] = centroid_count
                         item['centroid_min'] = centroid_min
                         item['centroid_max'] = centroid_max
                     output_states[sn] = item
                 except Exception as _e:
+                    import traceback
                     print("[WARNING] State '{}' skipped for '{}': {}".format(sn, var_name, _e))
+                    traceback.print_exc()
             all_outputs_data[var_name] = output_states
 
-        if use_cache:
-            update_progress(60, "Saving processed cache...")
-            cache_ok = save_export_cache(cache_path, {
-                "key": cache_key,
-                "bundle": {
-                    "state_meta": state_meta,
-                    "state_var_keys": state_var_keys,
-                    "disp_nodes_by_state": disp_nodes_by_state,
-                    "disp_max_by_state": disp_max_by_state,
-                    "all_outputs_data": all_outputs_data,
-                }
-            })
-            if not cache_ok:
-                print("[WARNING] Failed to save export cache: {}".format(cache_path))
+        update_progress(58, "Saving intermediate cache...")
+        save_export_cache(cache_path, {
+            "key": cache_key,
+            "bundle": {
+                "state_meta": state_meta,
+                "state_var_keys": state_var_keys,
+                "disp_nodes_by_state": disp_nodes_by_state,
+                "disp_max_by_state": disp_max_by_state,
+                "all_outputs_data": all_outputs_data
+            }
+        })
 
     # Store output data as inert JSON script blocks (per variable/state).
     # This avoids parsing a giant JS object at startup and loads state data on demand.
     output_state_index = {}
     output_state_tag_map = {}
     output_state_scripts = []
-    for var_name in available_outputs:
+    for var_name in export_outputs:
         states_for_var = all_outputs_data.get(var_name, {})
         sid_list = []
         tag_map = {}
@@ -1734,101 +1728,46 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
         'id': sn,
         'time': state_meta.get(sn, {}).get('time', 0.0),
         'increment': state_meta.get(sn, {}).get('increment', 0),
-        'disp_max': float(disp_max_by_state.get(sn, 0.0)),
+        'frequency': state_meta.get(sn, {}).get('frequency', None),
+        'title': state_meta.get(sn, {}).get('title', ''),
         'variables': state_var_keys.get(sn, [])
     } for sn in state_names]
     states_json = json.dumps(states_list, separators=(',', ':'))
     
     state_name = state_names[-1] if state_names else None
     
-    colors_data = None
-    colors_are_normalized = False
     color_range = [0.0, 1.0]
     colors_json = "null"
-
-    # Fast path: reuse already-processed state payload.
     if state_name and default_var:
         try:
             sd0 = all_outputs_data.get(default_var, {}).get(state_name, {})
-            c_u16 = sd0.get('colors_u16')
-            cmin = sd0.get('color_min')
-            cmax = sd0.get('color_max')
-            if c_u16 is not None and cmin is not None and cmax is not None:
-                colors_data = (np.array(c_u16, dtype=np.float32) / 65535.0)
-                colors_are_normalized = True
-                color_range = [float(cmin), float(cmax)]
-        except Exception:
-            colors_data = None
-
-    # Fallback: compute directly from reader.
-    if colors_data is None and state_name and default_var:
-        colors_data = reader.get_values(state_name, default_var)
-        colors_are_normalized = False
-
-    if colors_data is not None:
-        try:
-            cd = np.nan_to_num(colors_data, nan=0.0, posinf=0.0, neginf=0.0)
-            if color_range == [0.0, 1.0]:
-                vmin = float(np.nanmin(cd))
-                vmax = float(np.nanmax(cd))
-                if not (np.isfinite(vmin) and np.isfinite(vmax)):
-                    vmin, vmax = 0.0, 1.0
-                if abs(vmax - vmin) < 1e-10:
-                    vmax = vmin + 1.0
-                color_range = [vmin, vmax]
-            if not colors_are_normalized:
-                rng = color_range[1] - color_range[0]
-                if abs(rng) < 1e-20:
-                    rng = 1.0
-                cd = np.clip((cd - color_range[0]) / rng, 0, 1)
-            colors_json = json.dumps(cd.tolist(), separators=(',', ':'))
+            vmin = sd0.get('color_min')
+            vmax = sd0.get('color_max')
+            if is_valid_number(vmin) and is_valid_number(vmax):
+                color_range = [safe_number(vmin, 0.0), safe_number(vmax, 1.0)]
+            c_b64 = sd0.get('colors_i16_b64')
+            c_count = safe_number(sd0.get('color_count', 0), 0, as_int=True)
+            if c_b64 and c_count > 0:
+                colors_json = json.dumps({'i16_b64': c_b64, 'count': c_count}, separators=(',', ':'))
         except Exception:
             pass
 
-    # Pre-compute bounding box diagonal for harmonic scale calculation.
-    try:
-        _bbox_for_scale = float(np.nanmax(original_nodes) - np.nanmin(original_nodes))
-        if not np.isfinite(_bbox_for_scale) or _bbox_for_scale < 1e-10:
-            _bbox_for_scale = 1.0
-    except Exception:
-        _bbox_for_scale = 1.0
-
-    def _calc_harmonic_initial_scale(max_disp, bbox_sz):
-        """Scale factor so max deformation = 5% of model bounding box."""
+    def _calc_harmonic_initial_scale(max_disp):
         try:
             md = abs(float(max_disp))
-        except Exception:
+        except:
             md = 0.0
-        try:
-            bs = abs(float(bbox_sz))
-        except Exception:
-            bs = 1.0
         if (not np.isfinite(md)) or md <= 0.0:
             return 1.0
-        if (not np.isfinite(bs)) or bs <= 1e-20:
-            bs = 1.0
-        TARGET_FRACTION = 0.05   # 5% of model size
-        scale = (TARGET_FRACTION * bs) / md
-        if (not np.isfinite(scale)) or scale <= 0:
-            return 1.0
-        return float(max(1.0, scale))
+        # Example: 1.5E-04 -> ceil(-log10(.)) = 4 -> 0.8 * (10^4 * 10) = 80000
+        order = int(np.ceil(-np.log10(md)))
+        if order < 0:
+            order = 0
+        return float(0.8 * (10 ** order) * 10.0)
 
     harmonic_initial_scale = 1.0
-    if harmonic_mode and state_names:
-        # Initial scale must follow the selected increment at startup.
-        if state_name:
-            harmonic_initial_scale = _calc_harmonic_initial_scale(disp_max_by_state.get(state_name, 0.0), _bbox_for_scale)
-        else:
-            disp_candidates = []
-            for _sn in state_names:
-                try:
-                    dv = abs(float(disp_max_by_state.get(_sn, 0.0)))
-                    if np.isfinite(dv) and dv > 0.0:
-                        disp_candidates.append(dv)
-                except:
-                    pass
-            if disp_candidates:
-                harmonic_initial_scale = _calc_harmonic_initial_scale(max(disp_candidates), _bbox_for_scale)
+    if harmonic_mode and state_name:
+        harmonic_initial_scale = _calc_harmonic_initial_scale(disp_max_by_state.get(state_name, 0.0))
     if not np.isfinite(harmonic_initial_scale) or harmonic_initial_scale <= 0:
         harmonic_initial_scale = 1.0
     harmonic_initial_scale_text = "{:g}".format(harmonic_initial_scale)
@@ -1836,100 +1775,52 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     update_progress(60, "Building mesh faces...")
     faces = []
     face_element_map = []
-    boundary_faces = []
-    boundary_face_elem_map = []
-
-    mesh_fingerprint = compute_mesh_fingerprint(reader)
-    geometry_cache_path = build_geometry_cache_path(reader.filepath, mesh_fingerprint)
-    geometry_cached = None
-    if geometry_cache_path:
-        geometry_cached = load_export_cache(geometry_cache_path)
-    if (
-        isinstance(geometry_cached, dict)
-        and geometry_cached.get("schema") == CACHE_SCHEMA_VERSION
-        and geometry_cached.get("mesh_fingerprint") == mesh_fingerprint
-        and isinstance(geometry_cached.get("payload"), dict)
-    ):
-        payload = geometry_cached.get("payload")
-        faces = payload.get("faces", []) or []
-        face_element_map = payload.get("face_element_map", []) or []
-        boundary_faces = payload.get("boundary_faces", []) or []
-        boundary_face_elem_map = payload.get("boundary_face_elem_map", []) or []
-        update_progress(65, "Using cached mesh geometry...")
-    else:
-        skipped_invalid_conn = 0
-        for ei, elem in enumerate(reader.elements):
-            try:
-                conn = reader.get_connectivity_as_indices(elem)
-                n = len(conn)
-                expected_n = len(elem.get("connectivity_ids", []) or [])
-                if n < 3 or (expected_n > 0 and n != expected_n):
-                    skipped_invalid_conn += 1
-                    continue
-                valid = all(0 <= idx < reader.n_nodes for idx in conn)
-                if not valid:
-                    skipped_invalid_conn += 1
-                    continue
-                nf = 0
-                if n == 4:
-                    faces.extend([
-                        [conn[0], conn[1], conn[2]],
-                        [conn[0], conn[1], conn[3]],
-                        [conn[0], conn[2], conn[3]],
-                        [conn[1], conn[2], conn[3]]
-                    ])
-                    nf = 4
-                elif n >= 8:
-                    faces.extend([
-                        [conn[0], conn[1], conn[2]], [conn[0], conn[2], conn[3]],
-                        [conn[4], conn[6], conn[5]], [conn[4], conn[7], conn[6]],
-                        [conn[0], conn[5], conn[1]], [conn[0], conn[4], conn[5]],
-                        [conn[2], conn[7], conn[3]], [conn[2], conn[6], conn[7]],
-                        [conn[0], conn[7], conn[4]], [conn[0], conn[3], conn[7]],
-                        [conn[1], conn[6], conn[2]], [conn[1], conn[5], conn[6]]
-                    ])
-                    nf = 12
-                elif n == 6:
-                    faces.extend([
-                        [conn[0], conn[1], conn[2]],
-                        [conn[3], conn[5], conn[4]],
-                        [conn[0], conn[3], conn[4]], [conn[0], conn[4], conn[1]],
-                        [conn[1], conn[4], conn[5]], [conn[1], conn[5], conn[2]],
-                        [conn[2], conn[5], conn[3]], [conn[2], conn[3], conn[0]]
-                    ])
-                    nf = 8
-                elif n == 3:
-                    faces.append([conn[0], conn[1], conn[2]])
-                    nf = 1
-                face_element_map.extend([ei] * nf)
-            except Exception:
-                pass
-        if skipped_invalid_conn > 0:
-            print("[WARNING] Skipped {} element(s) with invalid connectivity IDs".format(skipped_invalid_conn))
-
-        # Extract boundary (external) faces - faces that appear only once
-        update_progress(65, "Extracting boundary faces...")
-        face_count = {}
-        for f in faces:
-            key = tuple(sorted(f))
-            face_count[key] = face_count.get(key, 0) + 1
-        for fi, f in enumerate(faces):
-            if face_count[tuple(sorted(f))] == 1:
-                boundary_faces.append(list(f))
-                boundary_face_elem_map.append(face_element_map[fi])
-
-        if geometry_cache_path:
-            save_export_cache(geometry_cache_path, {
-                "schema": CACHE_SCHEMA_VERSION,
-                "mesh_fingerprint": mesh_fingerprint,
-                "payload": {
-                    "faces": faces,
-                    "face_element_map": face_element_map,
-                    "boundary_faces": boundary_faces,
-                    "boundary_face_elem_map": boundary_face_elem_map
-                }
-            })
-
+    skipped_invalid_conn = 0
+    for ei, elem in enumerate(reader.elements):
+        try:
+            conn = reader.get_connectivity_as_indices(elem)
+            n = len(conn)
+            valid = all(0 <= idx < reader.n_nodes for idx in conn)
+            if not valid:
+                skipped_invalid_conn += 1
+                continue
+            nf = 0
+            if n == 4:
+                faces.extend([
+                    [conn[0], conn[1], conn[2]],
+                    [conn[0], conn[1], conn[3]],
+                    [conn[0], conn[2], conn[3]],
+                    [conn[1], conn[2], conn[3]]
+                ])
+                nf = 4
+            elif n >= 8:
+                faces.extend([
+                    [conn[0], conn[1], conn[2]], [conn[0], conn[2], conn[3]],
+                    [conn[4], conn[6], conn[5]], [conn[4], conn[7], conn[6]],
+                    [conn[0], conn[5], conn[1]], [conn[0], conn[4], conn[5]],
+                    [conn[2], conn[7], conn[3]], [conn[2], conn[6], conn[7]],
+                    [conn[0], conn[7], conn[4]], [conn[0], conn[3], conn[7]],
+                    [conn[1], conn[6], conn[2]], [conn[1], conn[5], conn[6]]
+                ])
+                nf = 12
+            elif n == 6:
+                faces.extend([
+                    [conn[0], conn[1], conn[2]],
+                    [conn[3], conn[5], conn[4]],
+                    [conn[0], conn[3], conn[4]], [conn[0], conn[4], conn[1]],
+                    [conn[1], conn[4], conn[5]], [conn[1], conn[5], conn[2]],
+                    [conn[2], conn[5], conn[3]], [conn[2], conn[3], conn[0]]
+                ])
+                nf = 8
+            elif n == 3:
+                faces.append([conn[0], conn[1], conn[2]])
+                nf = 1
+            face_element_map.extend([ei] * nf)
+        except:
+            pass
+    if skipped_invalid_conn > 0:
+        print("[WARNING] Skipped {} element(s) with invalid connectivity IDs".format(skipped_invalid_conn))
+    
     faces_json = json.dumps(faces, separators=(',', ':'))
     face_element_map_json = json.dumps(face_element_map, separators=(',', ':'))
     
@@ -1944,6 +1835,18 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     elem_ids_list = [int(e.get("id", i + 1)) for i, e in enumerate(reader.elements)]
     elem_ids_json = json.dumps(elem_ids_list, separators=(',', ':'))
     
+    # Extract boundary (external) faces - faces that appear only once
+    update_progress(65, "Extracting boundary faces...")
+    face_count = {}
+    for f in faces:
+        key = tuple(sorted(f))
+        face_count[key] = face_count.get(key, 0) + 1
+    boundary_faces = []
+    boundary_face_elem_map = []
+    for fi, f in enumerate(faces):
+        if face_count[tuple(sorted(f))] == 1:
+            boundary_faces.append(list(f))
+            boundary_face_elem_map.append(face_element_map[fi])
     boundary_faces_json = json.dumps(boundary_faces, separators=(',', ':'))
     boundary_face_elem_map_json = json.dumps(boundary_face_elem_map, separators=(',', ':'))
 
@@ -1997,7 +1900,6 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     show_animation_section = bool(n_states > 0 and (harmonic_mode or unique_increment_count > 1))
     animation_range_max = max(0, n_states - 1)
     viewer_mode_label = "harmonic" if harmonic_mode else "static"
-    default_scale_factor_text = harmonic_initial_scale_text if harmonic_mode else "1"
 
     if harmonic_mode:
         scale_controls_html = (
@@ -2084,11 +1986,14 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
 body{font-family:'Segoe UI',Arial,sans-serif;background:#efefef;color:#333;overflow:hidden}
 #c{width:100vw;height:100vh;position:relative}
 #cv{position:absolute;left:320px;top:0}
-#sb{position:absolute;top:0;left:0;width:320px;height:100%;background:#efefef;border-right:2px solid #ccc;overflow-y:auto;box-shadow:2px 0 10px rgba(0,0,0,0.1)}
+#sb{position:absolute;top:0;left:0;width:320px;height:100%;background:#efefef;border-right:2px solid #ccc;overflow-y:auto;overflow-x:hidden;box-shadow:2px 0 10px rgba(0,0,0,0.1)}
 .p{padding:14px 16px;border-bottom:1px solid #ddd}
 .pt{font-size:12px;font-weight:bold;color:#2196F3;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px}
 .ir{display:flex;justify-content:space-between;padding:4px 0;font-size:11px}
 .il{color:#666}.iv{color:#333;font-weight:600}
+.ir-file-name{align-items:flex-start;gap:8px}
+.ir-file-name .il{flex:0 0 auto;padding-top:1px}
+.ir-file-name .iv{flex:1 1 auto;min-width:0;text-align:right;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.25}
 .lg{text-align:center;padding:15px 16px;background:#ffffff;border-bottom:3px solid #2196F3}
 .lg img{max-width:200px;height:auto;margin-bottom:6px}
 .lg h1{font-size:22px;color:#2196F3;font-weight:bold;margin-bottom:4px}
@@ -2104,6 +2009,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#efefef;color:#333;overf
 .bt-orange{background:#FF6D00}.bt-orange:hover{background:#E65100}
 .bt-yellow{background:#FFD54F;color:#333}.bt-yellow:hover{background:#FBC02D}
 .ck{display:flex;align-items:center;margin:6px 0;font-size:11px;color:#444}
+.disp-opt-sec{font-size:11px;font-weight:bold;color:#555;margin:18px 0 8px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px}
+.disp-opt-sec-first{margin-top:6px}
 .ck input{margin-right:8px;accent-color:#2196F3}
 select{width:100%;padding:8px;background:#fff;border:1px solid #ccc;color:#333;border-radius:4px;font-size:11px;margin:6px 0}
 select:focus{outline:none;border-color:#2196F3}
@@ -2136,15 +2043,43 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .pinned-label .pn-elem{color:#81C784;font-size:0.9em}
 #dialog-link-layer{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:265}
 #dialog-box-container{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:191;overflow:hidden}
-.dialog-box{position:absolute;pointer-events:auto;display:inline-block;max-width:340px;min-width:90px;background:rgba(255,255,255,0.95);color:#222;border:1px solid rgba(0,0,0,0.24);border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.35);font-size:11px;line-height:1.35}
+.dialog-box{position:absolute;pointer-events:auto;display:inline-block;max-width:340px;min-width:90px;background:rgba(255,255,255,0.95);color:#222;border:1px solid rgba(0,0,0,0.24);border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.35);font-size:11px;line-height:1.35;transition:border-color .15s,box-shadow .15s}
+.dialog-box.active{border-color:#1976D2;box-shadow:0 0 0 2px rgba(25,118,210,0.22),0 2px 10px rgba(0,0,0,0.35)}
+.dialog-box.editing{border-color:#FDD835;box-shadow:0 0 0 2px rgba(253,216,53,0.28),0 2px 10px rgba(0,0,0,0.35)}
 .dialog-tools{display:none;align-items:center;justify-content:flex-end;gap:4px;height:18px;padding:2px 4px 0 4px;cursor:move}
-.dialog-box.editing .dialog-tools{display:flex}
+.dialog-box.active .dialog-tools,.dialog-box.editing .dialog-tools{display:flex}
 .dialog-btn{width:16px;height:16px;border:none;border-radius:3px;font-size:10px;line-height:16px;text-align:center;color:#fff;cursor:pointer;padding:0}
 .dialog-btn-del{background:#D32F2F}
 .dialog-btn-link{background:#1976D2}
+.dialog-btn-copy{background:#00897B;width:auto;min-width:30px;padding:0 4px;font-size:8px;font-weight:700}
+.dialog-btn-font{background:#FB8C00}
+.dialog-btn-edit{background:#8E24AA}
 .dialog-btn-link.dialog-btn-disconnect{background:#616161}
 .dialog-body{display:inline-block;min-width:88px;min-height:22px;max-width:330px;padding:5px 7px;white-space:pre-wrap;word-break:break-word;outline:none;cursor:default}
-.dialog-box.editing .dialog-body{cursor:text;border-top:1px solid rgba(0,0,0,0.14)}
+.dialog-body-rich{white-space:normal;line-height:1.45;max-width:390px}
+.dialog-body-rich .dlg-rich-head{display:inline-block;margin-bottom:8px;padding:4px 10px;border-radius:999px;background:#6A1B9A;color:#fff;font-weight:800;letter-spacing:0.2px}
+.dialog-body-rich .dlg-rich-sec{margin-top:8px;padding:8px 10px;border-radius:8px;background:#fff;border-left:4px solid var(--dlg-accent,#6A1B9A);box-shadow:inset 0 0 0 1px rgba(0,0,0,0.06)}
+.dialog-body-rich .dlg-rich-sec-title{font-weight:800;color:var(--dlg-accent,#6A1B9A);margin-bottom:6px}
+.dialog-body-rich .dlg-rich-row+.dlg-rich-row{margin-top:5px}
+.dialog-body-rich .dlg-rich-tag{display:inline-block;min-width:86px;padding:2px 7px;border-radius:999px;background:var(--dlg-accent,#6A1B9A);color:#fff;font-weight:700;font-size:0.92em;margin-right:6px}
+.dialog-body-rich .dlg-rich-val{font-weight:600;color:#222}
+.dialog-body-rich .dlg-rich-result{display:inline-block;padding:2px 8px;border-radius:6px;background:#FFF8E1;border:1px solid rgba(0,0,0,0.18);color:#000;font-weight:900}
+.dialog-box.editing .dialog-body{cursor:text;border-top:1px solid rgba(253,216,53,0.58)}
+.dialog-edit-popup{position:fixed;display:none;min-width:190px;background:rgba(255,255,255,0.98);border:2px solid #8E24AA;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);padding:10px 12px;z-index:194}
+.dialog-edit-popup .dep-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:11px;font-weight:800;color:#6A1B9A}
+.dialog-edit-popup .dep-close{background:#F44336;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:700;padding:1px 7px;cursor:pointer}
+.dialog-edit-popup .dep-row{display:flex;align-items:center;gap:6px;margin:6px 0;flex-wrap:wrap}
+.dialog-edit-popup .dep-row label{font-size:10px;font-weight:700;color:#555}
+.dialog-edit-popup .dep-btn{min-width:30px;padding:4px 6px;border:1px solid #bbb;border-radius:4px;background:linear-gradient(#fff,#eee);cursor:pointer;font-size:10px;font-weight:700;color:#333}
+.dialog-edit-popup .dep-btn.on{background:linear-gradient(#AB47BC,#8E24AA);border-color:#6A1B9A;color:#fff}
+.dialog-edit-popup input[type="color"]{width:38px;height:24px;padding:0;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer}
+.dialog-font-popup{position:fixed;display:none;width:220px;max-width:calc(100vw - 20px);box-sizing:border-box;background:rgba(255,255,255,0.98);border:2px solid #FB8C00;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);padding:10px 12px;z-index:194}
+.dialog-font-popup .dfp-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:11px;font-weight:800;color:#E65100}
+.dialog-font-popup .dfp-close{background:#F44336;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:700;padding:1px 7px;cursor:pointer}
+.dialog-font-popup .dfp-row{display:flex;align-items:center;gap:8px}
+.dialog-font-popup .dfp-row input[type="range"]{flex:1;accent-color:#FB8C00}
+.dialog-font-popup .dfp-row select{flex:1;font-size:10px;padding:3px 4px;border:1px solid #bbb;border-radius:4px;background:#fff;color:#333}
+.dialog-font-popup .dfp-val{font-size:10px;font-weight:700;color:#E65100;min-width:34px;text-align:right}
 .dialog-preview{position:fixed;pointer-events:none;z-index:192;min-width:88px;padding:4px 7px;border:1px dashed rgba(33,150,243,0.75);border-radius:6px;background:rgba(18,22,30,0.28);color:#1976D2;font-size:10px;font-weight:700}
 #dlg-actions{display:none;gap:4px;margin-left:6px}
 #dlg-hint{display:none;font-size:9px;color:#777;margin:2px 0 0 22px}
@@ -2180,7 +2115,21 @@ input[type="range"]{width:100%;accent-color:#2196F3}
     box-shadow:0 4px 15px rgba(0,0,0,0.2);padding:15px 10px;z-index:100;
     display:flex;flex-direction:column;
 }
+#legend-state-meta{position:absolute;top:18px;left:340px;width:130px;padding:6px 7px;border:1px solid rgba(33,150,243,0.5);border-radius:6px;background:rgba(255,255,255,0.92);box-shadow:0 3px 10px rgba(0,0,0,0.12);z-index:101}
+.legend-state-line{font-size:11px;font-weight:700;color:#1B3A57;line-height:1.25}
 #legend-var-title{font-size:13px;font-weight:bold;color:#2196F3;text-align:center;margin-bottom:10px;line-height:1.2}
+.disp-comp-wrap{display:none;margin-top:6px;padding:6px 7px;border:1px solid #d9d9d9;border-radius:6px;background:#fafafa}
+.disp-comp-title{font-size:10px;font-weight:700;color:#555;margin-bottom:5px}
+.disp-comp-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.disp-comp-btn{font-size:9px;font-weight:700;padding:4px 6px;border-radius:4px;cursor:pointer;line-height:1.2;transition:background-color 0.15s ease,border-color 0.15s ease,color 0.15s ease}
+.disp-comp-btn.disp-comp-mag{background:rgba(158,158,158,0.28);border:1px solid rgba(117,117,117,0.55);color:#555}
+.disp-comp-btn.disp-comp-mag.active{background:#9E9E9E;border-color:#757575;color:#fff}
+.disp-comp-btn.disp-comp-x{background:rgba(255,0,0,0.18);border:1px solid rgba(255,0,0,0.42);color:#B71C1C}
+.disp-comp-btn.disp-comp-x.active{background:#FF0000;border-color:#D50000;color:#fff}
+.disp-comp-btn.disp-comp-y{background:rgba(0,204,0,0.18);border:1px solid rgba(0,204,0,0.42);color:#1B5E20}
+.disp-comp-btn.disp-comp-y.active{background:#00CC00;border-color:#009900;color:#fff}
+.disp-comp-btn.disp-comp-z{background:rgba(0,102,255,0.18);border:1px solid rgba(0,102,255,0.42);color:#0D47A1}
+.disp-comp-btn.disp-comp-z.active{background:#0066FF;border-color:#0047B3;color:#fff}
 #legend-content{flex:1;display:flex;gap:6px;align-items:stretch}
 #legend-values{display:flex;flex-direction:column;justify-content:space-between;font-weight:600;color:#333;min-width:55px;text-align:right}
 #legend-values.legend-edit{min-width:78px;text-align:left}
@@ -2235,6 +2184,8 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .xy-btn-edit:hover{background:linear-gradient(#42A5F5,#1E88E5);color:white;border-color:#1565C0}
 .xy-btn-deriv{color:#E65100;border-color:#FFB74D;background:linear-gradient(#FFF3E0,#FFE0B2)}
 .xy-btn-deriv:hover{background:linear-gradient(#FFB74D,#FB8C00);color:#fff;border-color:#EF6C00}
+.xy-btn-forecast{color:#6A1B9A;border-color:#CE93D8;background:linear-gradient(#F3E5F5,#E1BEE7)}
+.xy-btn-forecast:hover{background:linear-gradient(#AB47BC,#8E24AA);color:#fff;border-color:#6A1B9A}
 .xy-btn-font{color:#4E342E;border-color:#BCAAA4;background:linear-gradient(#F5F5F5,#E0E0E0)}
 .xy-btn-font:hover{background:linear-gradient(#BCAAA4,#8D6E63);color:#fff;border-color:#6D4C41}
 .xy-excel-icon{display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;margin-right:5px;border:1px solid #1B5E20;border-radius:2px;background:linear-gradient(#43A047,#2E7D32);color:#fff;font-size:9px;font-weight:800;line-height:1}
@@ -2275,6 +2226,35 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 #xy-font-popup .xyf-lbl{display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:700;color:#444;margin-bottom:3px}
 #xy-font-popup .xyf-lbl .xyf-val{font-family:monospace;color:#1565C0}
 #xy-font-popup input[type="range"]{width:100%;accent-color:#FB8C00}
+.xy-modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(16,22,34,0.48);z-index:10020}
+.xy-modal{width:min(460px,92vw);max-height:90vh;overflow:auto;background:rgba(255,255,255,0.985);border:2px solid #8E24AA;border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,0.3);padding:14px 16px}
+.xy-modal-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.xy-modal-title span{font-size:13px;font-weight:700;color:#6A1B9A}
+.xy-modal-close{background:#F44336;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:700;padding:2px 8px;cursor:pointer}
+.xy-modal-close:hover{background:#D32F2F}
+.xy-modal-sub{font-size:10px;color:#666;line-height:1.45;margin-bottom:10px}
+.xy-modal-grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.xy-modal-field{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.xy-modal-field label{font-size:10px;font-weight:700;color:#555}
+.xy-modal-field input,.xy-modal-field select{width:100%;font-size:10px;padding:5px 7px;border:1px solid #bbb;border-radius:4px;background:#fff}
+.xy-modal-field input:focus,.xy-modal-field select:focus{border-color:#8E24AA;outline:none}
+.xy-modal-check{display:flex;align-items:flex-start;gap:8px;margin:10px 0 4px 0;font-size:10px;color:#444}
+.xy-modal-check input{margin-top:2px;accent-color:#8E24AA}
+.xy-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}
+#xy-forecast-fields{display:flex;flex-direction:column;gap:8px}
+.xy-forecast-row{display:flex;align-items:flex-end;gap:6px}
+.xy-forecast-row .xy-modal-field{flex:1;margin:0}
+.xy-forecast-remove{min-width:30px;padding:4px 0}
+.xy-result-box{background:#FAF7FC;border:1px solid #E1BEE7;border-radius:8px;padding:10px 12px;font-size:10px;color:#333;line-height:1.55}
+.xy-result-box b{color:#4A148C}
+.xy-result-box hr{border:none;border-top:1px solid #E1BEE7;margin:8px 0}
+.xy-result-sec{margin-top:8px;padding-top:6px;border-top:1px dashed #CE93D8}
+.xy-result-item+.xy-result-item{margin-top:6px}
+.xy-result-block{margin-top:8px;padding:8px 10px;border-radius:8px;background:#fff;border-left:4px solid #8E24AA;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.05)}
+.xy-result-block-title{font-size:11px;font-weight:800;margin-bottom:6px}
+.xy-result-row+.xy-result-row{margin-top:5px}
+.xy-result-chip{display:inline-block;min-width:86px;padding:2px 7px;border-radius:999px;font-size:9px;font-weight:800;margin-right:6px}
+.xy-result-value-highlight{display:inline-block;padding:2px 8px;border-radius:6px;background:#FFF8E1;border:1px solid rgba(0,0,0,0.18);color:#000;font-weight:900}
 /* XY Sheet Tabs */
 #xy-sheet-bar{display:flex;align-items:center;background:#1976D2;flex-shrink:0;min-height:28px;overflow-x:auto;padding:0 4px}
 .xy-sheet-tab{font-size:10px;font-weight:600;padding:5px 12px;cursor:pointer;color:rgba(255,255,255,0.7);border:none;background:transparent;white-space:nowrap;border-bottom:2px solid transparent;transition:all .2s}
@@ -2334,6 +2314,10 @@ Scroll Wheel: Zoom
 <input type="file" id="xy-file-input" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="xyOnFileSelected(this)">
 
 <!-- Color Legend with intermediate values on LEFT side -->
+<div id="legend-state-meta">
+<div class="legend-state-line" id="legend-inc-line">Inc: -</div>
+<div class="legend-state-line" id="legend-time-line">Time: -</div>
+</div>
 <div id="color-legend">
 <div id="legend-var-title">''' + (default_var if default_var else 'Variable') + '''</div>
 <div id="legend-content">
@@ -2362,7 +2346,7 @@ Scroll Wheel: Zoom
 <span>European FEA Department - v1.0.1</span>
 </div>
 <div class="p"><div class="pt">File Information</div>
-<div class="ir"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
+<div class="ir ir-file-name"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
 <div class="ir"><span class="il">Nodes: </span><span class="iv">''' + str(reader.n_nodes) + '''</span></div>
 <div class="ir"><span class="il">Elements: </span><span class="iv">''' + str(reader.n_elements) + '''</span></div>
 <div class="ir"><span class="il">States: </span><span class="iv">''' + str(len(reader.states)) + '''</span></div>
@@ -2370,7 +2354,16 @@ Scroll Wheel: Zoom
 </div>
 <div class="p"><div class="pt">Output Available</div>
 <select id="vs" onchange="ovs()">''' + ''.join(['<option value="{0}"{1}>{0}</option>'.format(
-    v, ' selected' if v == default_var else '') for v in available_outputs]) + '''</select>
+    v, ' selected' if v == default_var else '') for v in viewer_outputs]) + '''</select>
+<div id="disp-component-wrap" class="disp-comp-wrap">
+<div class="disp-comp-title">Displacement Component</div>
+<div class="disp-comp-grid">
+<button type="button" id="disp-comp-mag" class="disp-comp-btn disp-comp-mag" onclick="setDisplacementComponent('mag')">Displacement Mag</button>
+<button type="button" id="disp-comp-x" class="disp-comp-btn disp-comp-x" onclick="setDisplacementComponent('x')">Displacement X</button>
+<button type="button" id="disp-comp-y" class="disp-comp-btn disp-comp-y" onclick="setDisplacementComponent('y')">Displacement Y</button>
+<button type="button" id="disp-comp-z" class="disp-comp-btn disp-comp-z" onclick="setDisplacementComponent('z')">Displacement Z</button>
+</div>
+</div>
 <div class="ck" style="margin-top:4px"><input type="checkbox" id="centroid-mode" onchange="tgCentroid(this.checked)"><label>Element Centroid</label><span style="font-size:8px;color:#999;margin-left:4px" id="centroid-info">''' + ('(linear extrapolation from IPs)' if var_locations.get(default_var, 'node') == 'element' else '(extrapolated nodal values)') + '''</span></div>
 </div>
 <div class="p"><div class="pt">Increment Selection</div>
@@ -2378,17 +2371,17 @@ Scroll Wheel: Zoom
 </div>
 ''' + animation_panel_html + '''
 <div class="p"><div class="pt">Display Options</div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:2px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Mesh</div>
+<div class="disp-opt-sec disp-opt-sec-first">Mesh</div>
 <div class="ck"><label style="font-size:11px;color:#444">Edges:</label><select id="ed" onchange="tgeMode(this.value)" style="margin-left:6px;font-size:10px;padding:2px 4px;border:1px solid #ccc;border-radius:3px"><option value="feature" selected>Feature Edges</option><option value="none">No Edges</option>''' + all_edges_option_html + '''</select></div>
 <div class="ck"><input type="checkbox" id="wf" onchange="tgw(this.checked)"><label>Wireframe Mode</label></div>
 <div class="ck"><input type="checkbox" id="um" onchange="tgu(this.checked)"><label>Undeformed Mesh</label></div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:8px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">View</div>
-<div class="ck"><input type="checkbox" id="persp" checked onchange="tgp(this.checked)"><label>Perspective View</label></div>
+<div class="disp-opt-sec">View</div>
+<div class="ck"><input type="checkbox" id="persp" onchange="tgp(this.checked)"><label>Perspective View</label></div>
 <div class="ck"><input type="checkbox" id="ar" onchange="tgr(this.checked)"><label>Auto Rotate</label></div>
 <div class="ck"><input type="checkbox" id="ax" checked onchange="tga(this.checked)"><label>Show Axes</label></div>
 <div class="ck"><input type="checkbox" id="mi" checked onchange="tgmi(this.checked)"><label>Mouse Info</label></div>
 <div class="ck"><label style="font-size:11px;color:#444">Background:</label><input type="color" id="bg-color" value="#efefef" onchange="setBgColor(this.value)" style="margin-left:6px;width:32px;height:20px;border:1px solid #ccc;border-radius:3px;cursor:pointer;vertical-align:middle"></div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:8px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Value Range Filter</div>
+<div class="disp-opt-sec">Value Range Filter</div>
 <div class="ck"><input type="checkbox" id="vrf-on" onchange="tgVRF(this.checked)"><label>Enable Range Filter</label></div>
 <div id="vrf-controls" style="display:none;margin:4px 0">
 <div style="position:relative;height:22px;margin:8px 6px 4px 6px">
@@ -2406,7 +2399,7 @@ Scroll Wheel: Zoom
 <span>Hi: <span id="vrf-hi-val">1.00e+0</span></span>
 </div>
 </div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:8px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Data</div>
+<div class="disp-opt-sec">Data</div>
 <div class="ck"><input type="checkbox" id="sv" onchange="tgv(this.checked)"><label>Values</label><button class="bt bt2" onclick="clearValuePinsAndTable()" style="margin-left:8px;font-size:9px;padding:1px 8px">Clear</button></div>
 <div id="value-font-row" style="display:flex;align-items:center;gap:6px;margin:2px 0 4px 22px">
 <span style="font-size:10px;color:#555;font-weight:600">Font</span>
@@ -2435,7 +2428,7 @@ Scroll Wheel: Zoom
 <span id="table-form-font-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:14px;text-align:right">10</span>
 </div>
 <div class="ck"><label style="font-size:11px;color:#444">Measure:</label><select id="meas-mode" onchange="setMeasMode(this.value)" style="margin-left:6px;font-size:10px;padding:2px 4px;border:1px solid #ccc;border-radius:3px"><option value="off" selected>Off</option><option value="distance">Distance</option><option value="angle">Angle</option></select><button class="bt bt2" onclick="clearMeas()" style="margin-left:4px;font-size:9px;padding:1px 6px">Clear</button></div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:8px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Text</div>
+<div class="disp-opt-sec">Text</div>
 <div class="ck">
 <input type="checkbox" id="dlg-on" onchange="tgDialogMode(this.checked)">
 <label>Dialog Box</label>
@@ -2445,11 +2438,6 @@ Scroll Wheel: Zoom
 </div>
 </div>
 <div id="dlg-hint">Activate and click on the mesh area to place a dialog box.</div>
-<div id="dlg-font-row" style="display:none;align-items:center;gap:6px;margin:4px 0 0 22px">
-<span style="font-size:9px;color:#666;font-weight:600">Font:</span>
-<input type="range" id="dlg-font" min="8" max="24" step="1" value="11" oninput="setDialogFontSize(this.value)" style="flex:1;max-width:130px">
-<span id="dlg-font-val" style="font-size:10px;font-weight:700;color:#333;min-width:18px;text-align:right">11</span>
-</div>
 </div>
 <div class="p"><div class="pt">XY Plot</div>
 <div style="display:flex;align-items:center;gap:8px">
@@ -2458,7 +2446,7 @@ Scroll Wheel: Zoom
 </div>
 </div>
 <div class="p"><div class="pt">View Manager</div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:2px 0 6px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Cut View</div>
+<div class="disp-opt-sec disp-opt-sec-first">Cut View</div>
 <div style="font-size:10px;color:#666;margin-bottom:6px">Cut the mesh along X, Y, or Z planes to reveal interior elements.</div>
 <div class="ck"><input type="checkbox" id="cut-x-on" onchange="updateCutPlane('x')"><label>Enable X Cut</label></div>
 <div class="range-row" id="cut-x-row" style="display:none"><span>X pos:</span><input type="range" id="cut-x-pos" min="0" max="100" value="50" step="1" oninput="updateCutPlane('x')"><span class="rv" id="cut-x-val">50%</span>
@@ -2469,20 +2457,27 @@ Scroll Wheel: Zoom
 <div class="ck"><input type="checkbox" id="cut-z-on" onchange="updateCutPlane('z')"><label>Enable Z Cut</label></div>
 <div class="range-row" id="cut-z-row" style="display:none"><span>Z pos:</span><input type="range" id="cut-z-pos" min="0" max="100" value="50" step="1" oninput="updateCutPlane('z')"><span class="rv" id="cut-z-val">50%</span>
 <select id="cut-z-dir" onchange="updateCutPlane('z')" style="width:40px;font-size:9px;padding:1px"><option value="+">+</option><option value="-">-</option></select></div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:10px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Rotation Cut</div>
+<div class="ck" style="margin-top:3px"><input type="checkbox" id="cut-hide-planes" onchange="updateAxisCutVisuals()"><label>Hide planes</label></div>
+<div class="disp-opt-sec">Rotation Cut</div>
 <div style="font-size:10px;color:#666;margin-bottom:6px">Rotate a cut plane around a global X, Y, or Z reference line.</div>
 <div class="ck"><input type="checkbox" id="rot-cut-on" onchange="updateRotationCut()"><label>Enable Rotation Cut</label></div>
 <div id="rot-cut-controls" style="display:none;margin:4px 0 2px 0">
 <div class="ck"><label style="font-size:11px;color:#444">Axis:</label><select id="rot-cut-axis" onchange="updateRotationCut()" style="margin-left:6px;width:52px;font-size:10px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"><option value="x" selected>X</option><option value="y">Y</option><option value="z">Z</option></select><span id="rot-cut-plane-hint" style="margin-left:8px;font-size:9px;color:#666">0&deg; =&gt; XY plane</span></div>
-<div class="range-row"><span>Angle:</span><input type="range" id="rot-cut-angle" min="0" max="360" value="0" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-angle-val">0&deg;</span>
-<select id="rot-cut-dir" onchange="updateRotationCut()" title="Rotation direction" style="width:40px;font-size:9px;padding:1px"><option value="+">+</option><option value="-">-</option></select></div>
+<div class="range-row"><span style="color:#1565C0;font-weight:700">Angle:</span><input type="range" id="rot-cut-angle" min="0" max="360" value="0" step="1" oninput="updateRotationCut()" style="accent-color:#1E88E5"><span class="rv" id="rot-cut-angle-val" style="color:#1565C0">0&deg;</span>
+<select id="rot-cut-dir" onchange="updateRotationCut()" title="Rotation direction" style="width:40px;font-size:9px;padding:1px;border:1px solid #1E88E5;border-radius:3px;background:#E3F2FD;color:#0D47A1"><option value="+">+</option><option value="-">-</option></select></div>
+<div style="display:flex;align-items:center;gap:8px;margin:5px 0 2px 0">
+<span style="font-size:10px;color:#555;font-weight:600">Angle 2</span>
+<button type="button" id="rot-cut-angle2-toggle" onclick="toggleRotationCutAngle2()" style="min-width:58px;padding:2px 10px;font-size:10px;border:2px solid #B71C1C;border-radius:4px;background:#F44336;color:#fff;font-weight:700;cursor:pointer">Off</button>
+</div>
+<div class="range-row" id="rot-cut-angle2-row" style="display:none"><span style="color:#2E7D32;font-weight:700">Angle 2:</span><input type="range" id="rot-cut-angle2" min="0" max="180" value="0" step="1" oninput="updateRotationCut()" style="accent-color:#43A047"><span class="rv" id="rot-cut-angle2-val" style="color:#2E7D32">0&deg;</span></div>
 <div style="font-size:10px;color:#666;margin:6px 0 2px 0">Move Reference</div>
 <div class="range-row"><span id="rot-cut-ref-a-lbl">Y ref:</span><input type="range" id="rot-cut-ref-a" min="0" max="100" value="50" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-ref-a-val">50%</span></div>
 <div class="range-row"><span id="rot-cut-ref-b-lbl">Z ref:</span><input type="range" id="rot-cut-ref-b" min="0" max="100" value="50" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-ref-b-val">50%</span></div>
+<div class="ck" style="margin-top:3px"><input type="checkbox" id="rot-cut-hide-plane" onchange="updateRotationCutVisualState()"><label>Hide plane</label></div>
 <div style="display:flex;gap:4px;margin-top:4px"><button class="bt bt2" onclick="resetRotationCutReference()" style="font-size:9px;padding:1px 8px;flex:1">Center Ref</button><button class="bt bt2" onclick="resetRotationCutAngle()" style="font-size:9px;padding:1px 8px;flex:1">Zero Angle</button></div>
 </div>
-<button class="bt bt2" onclick="resetCutPlanes()" style="margin-top:6px;font-size:10px">Reset All Cuts</button>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:10px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Hide Elements</div>
+<button class="bt bt2" id="rot-cut-reset-all-btn" onclick="resetCutPlanes()" style="display:none;margin-top:6px;font-size:10px">Reset All Cuts</button>
+<div class="disp-opt-sec">Hide Elements</div>
 <div class="ck"><input type="checkbox" id="hide-elem-on" onchange="tgHideElements(this.checked)"><label>Hide Elements</label></div>
 <div id="hide-elem-actions">
 <div style="display:flex;align-items:center;gap:6px">
@@ -2504,9 +2499,9 @@ Scroll Wheel: Zoom
 <button class="leg-btn" onclick="resetLegRange()">Reset</button>
 </div>
 <div id="leg-data-info" style="font-size:10px;color:#888;margin-top:3px">Data range: ''' + cr_min + ''' ~ ''' + cr_max + '''</div>
-<div style="display:flex;align-items:center;gap:4px;margin-top:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:bold">Font:</span><input type="range" id="leg-font-size" min="7" max="20" step="1" value="12" oninput="setLegFontSize(this.value)" style="width:82px"><span id="leg-font-size-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:18px;text-align:right">12</span>
-<span style="font-size:10px;font-weight:bold;margin-left:6px">Levels:</span><select id="leg-levels" onchange="setLegLevels(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10" selected>10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option></select></div>
-<div style="display:flex;align-items:center;gap:4px;margin-top:4px"><span style="font-size:10px;font-weight:bold">Format:</span><select id="leg-format" onchange="setLegFormat(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="exp" selected>Exponential</option><option value="float">Floating</option></select><span id="leg-fdec-wrap" style="display:none;align-items:center;gap:3px;margin-left:2px"><span style="font-size:10px;font-weight:bold">Dec:</span><select id="leg-fdec" onchange="setLegFloatDecimals(this.value)" style="width:56px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6" selected>6</option><option value="7">7</option><option value="8">8</option></select></span></div>
+<div style="display:flex;align-items:center;gap:4px;margin-top:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:bold">Font:</span><input type="range" id="leg-font-size" min="7" max="20" step="1" value="14" oninput="setLegFontSize(this.value)" style="width:82px"><span id="leg-font-size-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:18px;text-align:right">14</span>
+<span style="font-size:10px;font-weight:bold;margin-left:6px">Levels:</span><select id="leg-levels" onchange="setLegLevels(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12" selected>12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option></select></div>
+<div style="display:flex;align-items:center;gap:4px;margin-top:4px"><span style="font-size:10px;font-weight:bold">Format:</span><select id="leg-format" onchange="setLegFormat(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="exp">Exponential</option><option value="float" selected>Floating</option></select><span id="leg-fdec-wrap" style="display:inline-flex;align-items:center;gap:3px;margin-left:2px"><span style="font-size:10px;font-weight:bold">Dec:</span><select id="leg-fdec" onchange="setLegFloatDecimals(this.value)" style="width:56px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select></span></div>
 <div style="display:flex;justify-content:flex-end;margin-top:3px"><button class="leg-btn" onclick="legendDefault()">Default</button></div>
 <div style="margin-top:6px;border-top:1px solid #e0e0e0;padding-top:4px">
 <div class="ck"><input type="checkbox" id="dc" checked onchange="tgd(this.checked)"><label>Discrete Legend</label></div>
@@ -2565,7 +2560,8 @@ Scroll Wheel: Zoom
 <button class="xy-btn xy-btn-font" id="xy-font-btn" onclick="xyToggleFontPopup()" title="XY preferences">Preferences</button>
 <button class="xy-btn" id="xy-anim-info-btn" onclick="xyToggleAnimInfo()" style="display:none;background:#D32F2F;color:#fff;border-color:#B71C1C">Hide Info.</button></div>
 </div>
-<div style="font-size:10px;font-weight:bold;color:#2196F3;cursor:pointer;margin:6px 0 2px 0;user-select:none" id="xy-hdr-curves" onclick="xyToggleSection('xy-sec-curves','xy-hdr-curves')">[+] CURVES</div>
+<div class="xy-edit-divider" style="margin:10px 0 8px 0"></div>
+<div style="font-size:10px;font-weight:bold;color:#2196F3;cursor:pointer;margin:14px 0 2px 0;user-select:none" id="xy-hdr-curves" onclick="xyToggleSection('xy-sec-curves','xy-hdr-curves')">[+] CURVES</div>
 <div id="xy-sec-curves" style="display:none">
 <div id="xy-curve-list"></div>
 <div id="xy-table-area">
@@ -2592,6 +2588,7 @@ Scroll Wheel: Zoom
 <button class="xy-btn xy-btn-add" onclick="xyAddCurve()">Add</button>
 <button class="xy-btn xy-btn-edit" onclick="xyEditCurve()">Edit</button>
 <button class="xy-btn xy-btn-deriv" id="xy-deriv-btn" onclick="xyDerivativeCurve()" style="display:none">Derivative</button>
+<button class="xy-btn xy-btn-forecast" id="xy-forecast-btn" onclick="xyOpenForecastDialog()" style="display:none">Forecast</button>
 <button class="xy-btn xy-btn-del" onclick="xyDeleteCurve()">Delete</button>
 <button class="xy-btn xy-btn-del" onclick="xyDeleteAllCurves()">Delete All</button>
 </div>
@@ -2604,15 +2601,51 @@ Scroll Wheel: Zoom
 <input type="range" id="xy-pref-font" min="8" max="24" step="1" value="10" oninput="xySetPrefFont(this.value)">
 </div>
 <div class="xyf-row">
-<div class="xyf-lbl"><span>Format</span><span class="xyf-val" id="xy-format-val">Exponential</span></div>
+<div class="xyf-lbl"><span>Format</span><span class="xyf-val" id="xy-format-val">Floating</span></div>
 <select id="xy-val-format" onchange="xySetValueFormat(this.value)" style="width:100%;font-size:10px;padding:3px 4px;border:1px solid #bbb;border-radius:4px">
-<option value="exp" selected>Exponential</option>
-<option value="float">Floating</option>
+<option value="exp">Exponential</option>
+<option value="float" selected>Floating</option>
 </select>
 </div>
 <div class="xyf-row" id="xy-float-levels-row">
-<div class="xyf-lbl"><span>Levels</span><span class="xyf-val" id="xy-float-levels-val">4</span></div>
-<input type="range" id="xy-float-levels" min="0" max="8" step="1" value="4" oninput="xySetFloatLevels(this.value)">
+<div class="xyf-lbl"><span>Levels</span><span class="xyf-val" id="xy-float-levels-val">2</span></div>
+<input type="range" id="xy-float-levels" min="0" max="8" step="1" value="2" oninput="xySetFloatLevels(this.value)">
+</div>
+</div>
+</div>
+<div class="xy-modal-overlay" id="xy-forecast-overlay">
+<div class="xy-modal">
+<div class="xy-modal-title"><span>Forecast</span><button class="xy-modal-close" onclick="xyCloseForecastDialog()">X</button></div>
+<div class="xy-modal-sub" id="xy-forecast-curve-info">Select one curve to create a linear forecast using all curve data.</div>
+<div class="xy-modal-field">
+<label for="xy-forecast-axis">Use Column</label>
+<select id="xy-forecast-axis" onchange="xyUpdateForecastDialogText()">
+<option value="x" selected>X</option>
+<option value="y">Y</option>
+</select>
+</div>
+<div class="xy-modal-sub" id="xy-forecast-axis-note">All forecast fields below use the selected column as the Multipole reference.</div>
+<div id="xy-forecast-fields"></div>
+<div class="xy-modal-actions" style="justify-content:flex-start;margin-top:8px">
+<button class="xy-btn xy-btn-add" onclick="xyAddForecastField()">Add</button>
+</div>
+<label class="xy-modal-check">
+<input type="checkbox" id="xy-forecast-secondary">
+<span>Consider secondary axis curves and evaluate their Y value at the forecast X.</span>
+</label>
+<div class="xy-modal-actions">
+<button class="xy-btn" onclick="xyCloseForecastDialog()">Close</button>
+<button class="xy-btn xy-btn-forecast" onclick="xyRunForecast()">Run Forecast</button>
+</div>
+</div>
+</div>
+<div class="xy-modal-overlay" id="xy-forecast-result-overlay">
+<div class="xy-modal">
+<div class="xy-modal-title"><span>Forecast Result</span><button class="xy-modal-close" onclick="xyCloseForecastResultDialog()">X</button></div>
+<div class="xy-result-box" id="xy-forecast-result-body">No forecast calculated yet.</div>
+<div class="xy-modal-actions">
+<button class="xy-btn xy-btn-forecast" onclick="xyCreateForecastDialogBox()">Create Diag. Box</button>
+<button class="xy-btn" onclick="xyCloseForecastResultDialog()">Close</button>
 </div>
 </div>
 </div>
@@ -2653,7 +2686,6 @@ if(!txt)return fallback;
 try{return JSON.parse(txt);}catch(e){console.error('Core data parse failed for '+name+':',e);return fallback;}
 }
 const ON=parseCoreData('ON',[]);
-function cloneNodes(src){var out=new Array(src.length);for(var i=0;i<src.length;i++){var s=src[i];out[i]=[s[0],s[1],s[2]];}return out;}
 const BF=parseCoreData('BF',[]);
 const BFE=parseCoreData('BFE',[]);
 let F=null;
@@ -2669,75 +2701,393 @@ function realNodeIdToIdx(realId){var idx=NIDS_REV[realId];return idx!==undefined
 function elemIdxToReal(idx){return (EIDS&&idx>=0&&idx<EIDS.length)?EIDS[idx]:idx;}
 function nodeIdxToReal(idx){return (NIDS&&idx>=0&&idx<NIDS.length)?NIDS[idx]:idx;}
 let C=null;
-function getInitialColors(){if(C===null)C=parseCoreData('C',null);return C;}
+function decodeB64Bytes(b64){
+if(!b64)return null;
+try{
+var bin=atob(b64);
+var len=bin.length;
+var out=new Uint8Array(len);
+for(var i=0;i<len;i++)out[i]=bin.charCodeAt(i)&255;
+return out;
+}catch(e){return null;}
+}
+function decodeNormI16B64(b64,count){
+var bytes=decodeB64Bytes(b64);
+if(!bytes)return null;
+try{
+var buf=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+var arr=new Int16Array(buf);
+var n=(count&&count>0)?Math.min(count,arr.length):arr.length;
+var out=new Array(n);
+for(var i=0;i<n;i++){
+var v=arr[i];
+if(v<0)v=0;
+out[i]=v/32767.0;
+}
+return out;
+}catch(e){return null;}
+}
+function decodeNodesF32B64(b64,nNodes){
+var bytes=decodeB64Bytes(b64);
+if(!bytes)return null;
+try{
+var buf=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+var arr=new Float32Array(buf);
+var nn=(nNodes&&nNodes>0)?nNodes:ON.length;
+var out=new Array(nn);
+for(var i=0;i<nn;i++){
+var k=i*3;
+if(k+2<arr.length)out[i]=[arr[k],arr[k+1],arr[k+2]];
+else out[i]=[0,0,0];
+}
+return out;
+}catch(e){return null;}
+}
+function getInitialColors(){
+if(C===null){
+C=parseCoreData('C',null);
+if(C&&C.i16_b64!==undefined){
+C=decodeNormI16B64(C.i16_b64,C.count);
+}
+}
+return C;
+}
 const CR=''' + json.dumps(color_range, separators=(',', ':')) + ''';
 const SL=parseCoreData('SL',[]);
-const SL_BY_ID={};
-for(var si0=0;si0<SL.length;si0++){
-var sm0=SL[si0];
-if(sm0&&sm0.id!==undefined&&sm0.id!==null)SL_BY_ID[String(sm0.id)]=sm0;
-}
 const STATE_NODE_TAG_MAP=''' + state_nodes_tag_map_json + ''';
 const STATE_NODE_CACHE={};
+const STATE_DISP_CACHE={};
+const STATE_NODE_PAYLOAD_CACHE={};
 const OUT_STATE_INDEX=''' + output_state_index_json + ''';
 const OUT_STATE_TAG_MAP=''' + output_state_tag_map_json + ''';
 const OUT_STATE_CACHE={};
 const VAR_LOCS=''' + json.dumps(var_locations, separators=(',', ':')) + ''';
-function getStateNodes(sid){
+const VIRTUAL_DISPLACEMENT_OUTPUT=''' + ('true' if virtual_displacement_output else 'false') + ''';
+function getStateNodePayload(sid){
 if(!sid)return null;
-if(STATE_NODE_CACHE[sid])return STATE_NODE_CACHE[sid];
+if(Object.prototype.hasOwnProperty.call(STATE_NODE_PAYLOAD_CACHE,sid))return STATE_NODE_PAYLOAD_CACHE[sid];
 var tagInfo=STATE_NODE_TAG_MAP[sid];
 if(!tagInfo)return null;
 var txt=readChunkedJsonTag(tagInfo);
 if(!txt)return null;
 try{
 var parsed=JSON.parse(txt);
-STATE_NODE_CACHE[sid]=parsed;
+STATE_NODE_PAYLOAD_CACHE[sid]=parsed;
 return parsed;
 }catch(e){
 console.error('State node parse failed for '+sid+':',e);
 return null;
 }
 }
+function buildAbsoluteNodesFromDisp(disp){
+var nn=ON.length||0;
+var out=new Array(nn);
+for(var i=0;i<nn;i++){
+var o=ON[i]||[0,0,0];
+var d=(disp&&disp[i])?disp[i]:[0,0,0];
+var dx=Number(d[0]);if(!isFinite(dx))dx=0;
+var dy=Number(d[1]);if(!isFinite(dy))dy=0;
+var dz=Number(d[2]);if(!isFinite(dz))dz=0;
+out[i]=[Number(o[0])+dx,Number(o[1])+dy,Number(o[2])+dz];
+}
+return out;
+}
+function getStateDisplacements(sid){
+if(!sid)return null;
+if(Object.prototype.hasOwnProperty.call(STATE_DISP_CACHE,sid))return STATE_DISP_CACHE[sid];
+var payload=getStateNodePayload(sid);
+if(!payload)return null;
+var disp=null;
+if(payload&&payload.disp_f32_b64!==undefined){
+disp=decodeNodesF32B64(payload.disp_f32_b64,payload.n_nodes);
+}else if(payload&&payload.f32_b64!==undefined){
+var absNodes=decodeNodesF32B64(payload.f32_b64,payload.n_nodes);
+if(absNodes){
+disp=new Array(ON.length);
+for(var i=0;i<ON.length;i++){
+var o=ON[i]||[0,0,0];
+var n=absNodes[i]||o;
+disp[i]=[Number(n[0])-Number(o[0]),Number(n[1])-Number(o[1]),Number(n[2])-Number(o[2])];
+}
+if(!Object.prototype.hasOwnProperty.call(STATE_NODE_CACHE,sid))STATE_NODE_CACHE[sid]=absNodes;
+}
+}
+STATE_DISP_CACHE[sid]=disp;
+return disp;
+}
+function getStateNodes(sid){
+if(!sid)return null;
+if(Object.prototype.hasOwnProperty.call(STATE_NODE_CACHE,sid))return STATE_NODE_CACHE[sid];
+var payload=getStateNodePayload(sid);
+if(!payload)return null;
+var parsed=null;
+if(payload&&payload.disp_f32_b64!==undefined){
+var disp=getStateDisplacements(sid);
+if(disp)parsed=buildAbsoluteNodesFromDisp(disp);
+}else if(payload&&payload.f32_b64!==undefined){
+parsed=decodeNodesF32B64(payload.f32_b64,payload.n_nodes);
+}
+STATE_NODE_CACHE[sid]=parsed;
+return parsed;
+}
 function ensureVarStateCache(v){
 if(!v)return {};
 if(!OUT_STATE_CACHE[v])OUT_STATE_CACHE[v]={};
 return OUT_STATE_CACHE[v];
 }
-function hasVarStateData(v){
-return !!(v&&OUT_STATE_INDEX&&OUT_STATE_INDEX[v]);
+function normalizeDisplacementComponent(mode){
+var m=String(mode||'mag').toLowerCase();
+return (m==='x'||m==='y'||m==='z'||m==='mag')?m:'mag';
 }
-function hasStateData(v,sid){
-if(!v||!sid||!OUT_STATE_INDEX||!OUT_STATE_INDEX[v])return false;
-var arr=OUT_STATE_INDEX[v];
-for(var i=0;i<arr.length;i++){if(arr[i]===sid)return true;}
-return false;
+function getCurrentVarDisplayName(){
+if(currentVar==='Displacement'){
+return DISP_COMPONENT_LABELS[normalizeDisplacementComponent(displacementComponent)]||'Displacement Mag';
 }
-function decodeNormArrayU16(vals){
-if(!vals||!vals.length)return null;
-var out=new Array(vals.length);
-for(var i=0;i<vals.length;i++){
-var vv=vals[i];
-if(vv===undefined||vv===null||!isFinite(vv))vv=0;
-out[i]=Number(vv)/65535.0;
+return currentVar||'Variable';
+}
+function refreshOutputVariableLabels(){
+var label=getCurrentVarDisplayName();
+var titleEl=document.getElementById('legend-var-title');
+if(titleEl){
+titleEl.textContent=label;
+var keepSingleLine=(label==='Displacement Mag.');
+titleEl.style.fontSize=keepSingleLine?'11px':'13px';
+titleEl.style.whiteSpace=keepSingleLine?'nowrap':'normal';
+titleEl.style.lineHeight=keepSingleLine?'1.1':'1.2';
+}
+var clnEl=document.getElementById('cln');
+if(clnEl)clnEl.textContent=label;
+}
+function refreshDisplacementComponentUi(){
+var wrap=document.getElementById('disp-component-wrap');
+var show=(currentVar==='Displacement');
+if(wrap)wrap.style.display=show?'block':'none';
+var mode=normalizeDisplacementComponent(displacementComponent);
+['mag','x','y','z'].forEach(function(key){
+var btn=document.getElementById('disp-comp-'+key);
+if(!btn)return;
+btn.classList.toggle('active',show&&key===mode);
+});
+refreshOutputVariableLabels();
+}
+function setDisplacementComponent(mode){
+var nextMode=normalizeDisplacementComponent(mode);
+if(nextMode===displacementComponent&&currentVar==='Displacement'){
+refreshDisplacementComponentUi();
+return;
+}
+displacementComponent=nextMode;
+if(OUT_STATE_CACHE&&OUT_STATE_CACHE.Displacement)OUT_STATE_CACHE.Displacement={};
+AD=ensureVarStateCache(currentVar);
+legendAutoResetPending=true;
+refreshDisplacementComponentUi();
+if(currentVar==='Displacement'&&cst){
+asc();
+document.getElementById('st').textContent='Output component changed to: '+getCurrentVarDisplayName();
+}else if(currentVar==='Displacement'){
+document.getElementById('st').textContent='Output changed to: '+getCurrentVarDisplayName()+' - Select an increment';
+}
+}
+function isVirtualDisplacementVar(v){
+return !!(VIRTUAL_DISPLACEMENT_OUTPUT&&v==='Displacement'&&(!OUT_STATE_INDEX||!OUT_STATE_INDEX[v]||OUT_STATE_INDEX[v].length===0));
+}
+function getVarStateIds(v){
+if(v==='Displacement'){
+var dispIds=[];
+for(var di=0;di<SL.length;di++){
+var ds=SL[di];
+if(!ds||ds.id===undefined||ds.id===null)continue;
+if(!STATE_NODE_TAG_MAP||!STATE_NODE_TAG_MAP[ds.id])continue;
+dispIds.push(ds.id);
+}
+if(dispIds.length>0)return dispIds;
+}
+if(isVirtualDisplacementVar(v)){
+var ids=[];
+for(var i=0;i<SL.length;i++){
+var s=SL[i];
+if(!s||s.id===undefined||s.id===null)continue;
+if(!STATE_NODE_TAG_MAP||!STATE_NODE_TAG_MAP[s.id])continue;
+ids.push(s.id);
+}
+return ids;
+}
+if(!v||!OUT_STATE_INDEX||!OUT_STATE_INDEX[v])return [];
+return OUT_STATE_INDEX[v];
+}
+function getStateMetaEntry(sid){
+if(sid===undefined||sid===null)return null;
+var sidTxt=String(sid);
+for(var i=0;i<SL.length;i++){
+var s=SL[i];
+if(s&&String(s.id)===sidTxt)return s;
+}
+return null;
+}
+function formatLegendStateTime(v){
+var num=Number(v);
+if(!isFinite(num))return '-';
+return num.toFixed(5).replace(/\.?0+$/,'');
+}
+function updateLegendStateMeta(info){
+var incEl=document.getElementById('legend-inc-line');
+var timeEl=document.getElementById('legend-time-line');
+if(!incEl||!timeEl)return;
+if(!info){
+incEl.textContent='Inc: -';
+timeEl.textContent='Time: -';
+return;
+}
+var incVal='-';
+if(info.increment!==undefined&&info.increment!==null&&String(info.increment)!==''){
+incVal=String(info.increment);
+}
+var timeTxt=formatLegendStateTime(info.time);
+incEl.textContent='Inc: '+incVal;
+timeEl.textContent='Time: '+timeTxt;
+}
+function buildVirtualDisplacementStateData(sid){
+var disp=getStateDisplacements(sid);
+if(!disp||!ON||ON.length===0)return null;
+var mode=normalizeDisplacementComponent(displacementComponent);
+var vals=new Array(ON.length);
+var vmin=Infinity,vmax=-Infinity;
+for(var i=0;i<ON.length;i++){
+var d=disp[i]||[0,0,0];
+var dx=Number(d[0]);
+var dy=Number(d[1]);
+var dz=Number(d[2]);
+if(!isFinite(dx))dx=0;
+if(!isFinite(dy))dy=0;
+if(!isFinite(dz))dz=0;
+var val=0;
+if(mode==='x')val=dx;
+else if(mode==='y')val=dy;
+else if(mode==='z')val=dz;
+else{
+val=Math.sqrt(dx*dx+dy*dy+dz*dz);
+if(!isFinite(val))val=0;
+}
+if(!isFinite(val))val=0;
+vals[i]=val;
+if(val<vmin)vmin=val;
+if(val>vmax)vmax=val;
+}
+if(!isFinite(vmin)||!isFinite(vmax)){
+vmin=0;
+vmax=1;
+}
+var colorMax=vmax;
+if(Math.abs(colorMax-vmin)<1e-10)colorMax=vmin+1.0;
+var inv=1/Math.max(1e-30,colorMax-vmin);
+var colors=new Array(vals.length);
+for(var mi=0;mi<vals.length;mi++){
+var nv=(vals[mi]-vmin)*inv;
+if(!isFinite(nv))nv=0;
+colors[mi]=Math.max(0,Math.min(1,nv));
+}
+var meta=getStateMetaEntry(sid)||{};
+var timeVal=Number(meta.time);
+if(!isFinite(timeVal))timeVal=0;
+var incVal=Number(meta.increment);
+if(!isFinite(incVal))incVal=0;
+var freqVal=null;
+if(meta.frequency!==undefined&&meta.frequency!==null){
+var fNum=Number(meta.frequency);
+if(isFinite(fNum))freqVal=fNum;
+}
+var out={
+time:timeVal,
+increment:incVal,
+frequency:freqVal,
+title:(meta.title!==undefined&&meta.title!==null)?String(meta.title):'',
+colors:colors,
+color_min:vmin,
+color_max:colorMax
+};
+if(CENTROID_EXPORTED){
+ensureElemConnectivityMaps();
+var centroidVals=[];
+var cvmin=Infinity,cvmax=-Infinity;
+if(elemNodesMap&&elemNodesMap.length>0){
+centroidVals=new Array(elemNodesMap.length);
+for(var ei=0;ei<elemNodesMap.length;ei++){
+var nodeList=elemNodesMap[ei];
+var sum=0,count=0;
+if(nodeList&&nodeList.length){
+for(var ni=0;ni<nodeList.length;ni++){
+var idx=nodeList[ni];
+if(idx===undefined||idx===null||idx<0||idx>=vals.length)continue;
+var mv=vals[idx];
+if(!isFinite(mv))continue;
+sum+=mv;
+count++;
+}
+}
+var cv=(count>0)?(sum/count):0;
+centroidVals[ei]=cv;
+if(cv<cvmin)cvmin=cv;
+if(cv>cvmax)cvmax=cv;
+}
+}
+if(!isFinite(cvmin)||!isFinite(cvmax)){
+cvmin=0;
+cvmax=1;
+}
+var centroidMax=cvmax;
+if(Math.abs(centroidMax-cvmin)<1e-10)centroidMax=cvmin+1.0;
+var cInv=1/Math.max(1e-30,centroidMax-cvmin);
+var centroidColors=new Array(centroidVals.length);
+for(var ci=0;ci<centroidVals.length;ci++){
+var cnv=(centroidVals[ci]-cvmin)*cInv;
+if(!isFinite(cnv))cnv=0;
+centroidColors[ci]=Math.max(0,Math.min(1,cnv));
+}
+out.centroid_colors=centroidColors;
+out.centroid_min=cvmin;
+out.centroid_max=centroidMax;
 }
 return out;
+}
+function hasVarStateData(v){
+return getVarStateIds(v).length>0;
+}
+function hasStateData(v,sid){
+if(!v||!sid)return false;
+var arr=getVarStateIds(v);
+var sidTxt=String(sid);
+for(var i=0;i<arr.length;i++){
+if(String(arr[i])===sidTxt)return true;
+}
+return false;
 }
 function getStateData(v,sid){
 if(!v||!sid)return null;
 var cache=ensureVarStateCache(v);
 if(cache[sid])return cache[sid];
+if(v==='Displacement'){
+try{
+var virtualData=buildVirtualDisplacementStateData(sid);
+if(virtualData){
+cache[sid]=virtualData;
+return virtualData;
+}
+}catch(e){
+console.error('Virtual displacement build failed for '+sid+':',e);
+}
+return null;
+}
 var map=OUT_STATE_TAG_MAP[v];
 if(!map||!map[sid])return null;
 var txt=readChunkedJsonTag(map[sid]);
 if(!txt)return null;
 try{
 var parsed=JSON.parse(txt);
-if(parsed&&parsed.colors===undefined&&parsed.colors_u16!==undefined){
-parsed.colors=decodeNormArrayU16(parsed.colors_u16);
+if(parsed&&parsed.colors===undefined&&parsed.colors_i16_b64!==undefined){
+parsed.colors=decodeNormI16B64(parsed.colors_i16_b64,parsed.color_count);
 }
-if(parsed&&parsed.centroid_colors===undefined&&parsed.centroid_u16!==undefined){
-parsed.centroid_colors=decodeNormArrayU16(parsed.centroid_u16);
+if(parsed&&parsed.centroid_colors===undefined&&parsed.centroid_i16_b64!==undefined){
+parsed.centroid_colors=decodeNormI16B64(parsed.centroid_i16_b64,parsed.centroid_count);
 }
 cache[sid]=parsed;
 return parsed;
@@ -2755,18 +3105,18 @@ const VIEWER_MODE="''' + viewer_mode_label + '''";
 const CENTROID_EXPORTED=''' + ('true' if export_centroid else 'false') + ''';
 const ALL_EDGES_EXPORTED=''' + ('true' if export_all_edges else 'false') + ''';
 const EXTERNAL_SURFACE_ONLY=''' + ('true' if harmonic_mode else 'false') + ''';
-const DEFAULT_SCALE_FACTOR=''' + default_scale_factor_text + ''';
-const BUILD_REV="5.0.0-patch-2026-03-10-a";
+const DEFAULT_SCALE_FACTOR=''' + harmonic_initial_scale_text + ''';
+const BUILD_REV="6.0.0-patch-2026-03-08-c";
 const LOGO_URI="''' + (logo_data_uri if logo_data_uri else "") + '''";
 var fileTitleOverlayEl=document.getElementById('file-title-overlay');
 if(fileTitleOverlayEl)fileTitleOverlayEl.textContent=HTMLNAME+'.html';
-if(typeof THREE==='undefined'){
+const THREE_MISSING=(typeof THREE==='undefined');
+if(THREE_MISSING){
 var stEl=document.getElementById('st');
 if(stEl)stEl.textContent='THREE.js failed to load. Check internet/proxy access to CDN.';
-throw new Error('THREE.js library not loaded');
 }
-let cs=DEFAULT_SCALE_FACTOR,cst=null,cn=cloneNodes(ON),cvEl=null,currentVar="''' + (default_var if default_var else '') + '''";
-let sc,ca,caPersp,caOrtho,re,ms,eg,axHelper,dr=false,pn=false,mz=false,pm={x:0,y:0},ir=false,isPerspective=true;
+let cs=DEFAULT_SCALE_FACTOR,cst=null,cn=ON.slice(),cvEl=null,currentVar="''' + (default_var if default_var else '') + '''";
+let sc,ca,caPersp,caOrtho,re,ms,eg,axHelper,dr=false,pn=false,mz=false,pm={x:0,y:0},ir=false,isPerspective=false;
 let ctrlRotAxis=null;
 let uMs=null,uEg=null,showUndeformed=false;
 let undContourMode=false;
@@ -2786,6 +3136,8 @@ let measHighlightSphere=null;
 let pinnedNodes=[],pinnedMarkers=[],pinnedLabels=[];
 let pinnedElems=[],pinnedElemMarkers=[],pinnedElemLabels=[],pinnedElemFaces=[];
 let dialogBoxes=[],dialogPreviewEl=null,dialogMode=false,dialogAddArmed=false,dialogConnectPendingId=null;
+let dialogActiveId=null,dialogEditPopupEl=null,dialogEditBoxId=null;
+let dialogFontPopupEl=null,dialogFontBoxId=null;
 let dialogFontSize=11;
 let tableFormFontSize=10;
 let dialogIdSeed=1,dialogDrag=null;
@@ -2812,18 +3164,22 @@ let cutRebuildTimer=null;
 let camDist=B*3,tg=new THREE.Vector3(CT[0],CT[1],CT[2]);
 let camQuat=new THREE.Quaternion();
 let animInterval=null,animIndex=0,animDirection=1,animRangeStart=0,animRangeEnd=0;
-let animMode='none',animPaused=false,animStaticSwing=false,animStepAccum=0,animStaticSeq=[];
+let animMode='none',animPaused=false,animStaticSwing=false,animStepAccum=0;
 let animHarmonic=(VIEWER_MODE==='harmonic'),animSwing=false,harmonicPhase=0,harmonicBaseStateId=null,harmonicFrameCount=48;
 let harmonicPerfActive=false,harmonicPerfPrevEdgeMode=null,harmonicPerfLastTableUpdateMs=0;
 let harmonicLegendSyncDone=false;
 let zoomBoxMode=false,zoomBoxStart=null,zoomBoxEnd=null,zoomBoxDiv=null;
 let curMin=CR[0],curMax=CR[1];
-let legFontSize=12;
+let legFontSize=14;
 let valueInfoFontSize=12;
 let dynamicLegend=false;
+let legendAutoResetPending=false;
 let dataMin=CR[0],dataMax=CR[1];
-let discreteMode=true,N_DISC=10;
-let legendValueFormat='exp',legendFloatDecimals=6;
+let discreteMode=true,N_DISC=12;
+let legendValueFormat='float',legendFloatDecimals=3;
+let legendColorMapId='1';
+const DISP_COMPONENT_LABELS={mag:'Displacement Mag.',x:'Displacement X',y:'Displacement Y',z:'Displacement Z'};
+let displacementComponent='mag';
 let legendCustomValues=null,legendCustomColors=null;
 let legendEditMode=false;
 let legendEditFocusValue=-1,legendEditFocusColor=-1;
@@ -2831,9 +3187,10 @@ let legendOutsideDblInit=false;
 let rawColors=null;
 let gifWorkerUrl=null;
 let axScene,axCamera,showAxes=true;
-let cutPlanes={x:{on:false,pos:50,dir:'+'},y:{on:false,pos:50,dir:'+'},z:{on:false,pos:50,dir:'+'},rotation:{on:false,axis:'x',angle:0,dir:'+',refA:50,refB:50}};
+let cutPlanes={x:{on:false,pos:50,dir:'+'},y:{on:false,pos:50,dir:'+'},z:{on:false,pos:50,dir:'+'},rotation:{on:false,axis:'x',angle:0,dir:'+',angle2On:false,angle2:0,dir2:'+',refA:50,refB:50,hidePlane:false}};
 let meshBBox={xmin:0,xmax:1,ymin:0,ymax:1,zmin:0,zmax:1};
-let rotationCutLine=null,rotationCutPlaneMesh=null,rotationCutPlaneEdges=null;
+let axisCutPlaneMeshes={x:null,y:null,z:null},axisCutPlaneEdges={x:null,y:null,z:null};
+let rotationCutLine=null,rotationCutPlaneMesh=null,rotationCutPlaneEdges=null,rotationCutPlaneMesh2=null,rotationCutPlaneEdges2=null;
 let vrfEnabled=false,vrfLo=0,vrfHi=1;
 let xyAppliedRange={xmin:'auto',xmax:'auto',ymin:'auto',ymax:'auto'};
 let xySecAppliedRange={ymin:'auto',ymax:'auto'};
@@ -2850,8 +3207,9 @@ let xyAnimIndex=-1;
 let xyAnimInfoVisible=true;
 let xyTitleFontSize=10;
 let xyValuesFontSize=9;
-let xyValueFormat='exp';
-let xyFloatLevels=4;
+let xyValueFormat='float';
+let xyFloatLevels=2;
+let xyForecastLastResult=null;
 let xyFontPopupInit=false;
 let xySelCols={x:false,y:false};
 let xyCellSel={active:false,startRow:0,startCol:0,endRow:0,endCol:0};
@@ -2971,7 +3329,9 @@ text:text,
 x:clientX,
 y:clientY,
 kind:(meta&&meta.kind)?meta.kind:'node',
-elemIdx:(meta&&meta.elemIdx!==undefined&&meta.elemIdx!==null)?meta.elemIdx:null
+elemIdx:(meta&&meta.elemIdx!==undefined&&meta.elemIdx!==null)?meta.elemIdx:null,
+rawValue:(meta&&meta.rawValue!==undefined&&meta.rawValue!==null)?meta.rawValue:null,
+idText:(meta&&meta.idText!==undefined&&meta.idText!==null)?String(meta.idText):''
 };
 }
 
@@ -3082,7 +3442,7 @@ var isElem=target&&target.type==='elem';
 var rid=isElem?(EIDS[target.idx]!==undefined?EIDS[target.idx]:target.idx):(NIDS[target.idx]!==undefined?NIDS[target.idx]:target.idx);
 var idPrefix=isElem?'E':'N';
 var cls=isElem?'pn-elem':'pn-node';
-return '<span style="color:#FFCDD2;font-size:0.85em">'+prefix+'</span><br><span class="'+cls+'">'+idPrefix+rid+'</span> <span class="pn-val">'+target.value.toExponential(3)+'</span>';
+return '<span style="color:#FFCDD2;font-size:0.85em">'+prefix+'</span><br><span class="'+cls+'">'+idPrefix+rid+'</span> <span class="pn-val">'+formatLegendDrivenValue(target.value,'N/A')+'</span>';
 }
 
 function ensureLegendExtremeVisual(which){
@@ -3673,15 +4033,54 @@ if(box.y>maxY)box.y=maxY;
 function syncDialogBoxSize(box){
 if(!box||!box.el)return;
 applyDialogFontToBox(box);
+applyDialogTextStyle(box);
 box.w=Math.max(90,box.el.offsetWidth||90);
 box.h=Math.max(24,box.el.offsetHeight||24);
 clampDialogBoxToView(box);
 applyDialogBoxDomPosition(box);
+if(dialogEditBoxId===box.id)positionDialogEditPopup(box);
+}
+
+function getDialogFontSizePx(box){
+var n=parseInt(box&&box.fontSizePx,10);
+if(!isFinite(n))n=dialogFontSize;
+return Math.max(8,Math.min(36,n));
 }
 
 function applyDialogFontToBox(box){
 if(!box||!box.el)return;
-box.el.style.fontSize=dialogFontSize+'px';
+box.el.style.fontSize=getDialogFontSizePx(box)+'px';
+}
+
+function ensureDialogTextStyle(box){
+if(!box)return {bold:false,italic:false,underline:false,color:'#222222'};
+if(!box.textStyle||typeof box.textStyle!=='object'){
+box.textStyle={bold:false,italic:false,underline:false,color:'#222222'};
+}
+if(box.textStyle.bold!==true)box.textStyle.bold=false;
+if(box.textStyle.italic!==true)box.textStyle.italic=false;
+if(box.textStyle.underline!==true)box.textStyle.underline=false;
+box.textStyle.color=xyForecastSafeColor(box.textStyle.color,'#222222');
+return box.textStyle;
+}
+
+function applyDialogTextStyle(box){
+if(!box||!box.body)return;
+box.body.style.fontWeight='';
+box.body.style.fontStyle='';
+box.body.style.textDecoration='';
+box.body.style.color='';
+}
+
+function getDialogSelectionInfo(box){
+if(!box||!box.body||!window.getSelection)return null;
+var sel=window.getSelection();
+if(!sel||sel.rangeCount<1)return null;
+var range=sel.getRangeAt(0);
+if(!range)return null;
+var node=range.commonAncestorContainer;
+if(node&&(node===box.body||box.body.contains(node)))return {range:range,collapsed:!!range.collapsed};
+return null;
 }
 
 function setDialogFontSize(v){
@@ -3689,32 +4088,390 @@ var n=parseInt(v,10);
 if(!isFinite(n))n=dialogFontSize;
 n=Math.max(8,Math.min(24,n));
 dialogFontSize=n;
-var inp=document.getElementById('dlg-font');
-if(inp&&String(inp.value)!==String(n))inp.value=String(n);
-var val=document.getElementById('dlg-font-val');
-if(val)val.textContent=String(n);
 for(var i=0;i<dialogBoxes.length;i++){
 var b=dialogBoxes[i];
 if(!b||!b.el)continue;
+if(b.fontSizePx!==undefined&&b.fontSizePx!==null&&String(b.fontSizePx)!=='')continue;
 applyDialogFontToBox(b);
 syncDialogBoxSize(b);
 }
 updateDialogBoxesVisuals();
 }
 
+function syncDialogTextSnapshot(box){
+if(!box||!box.body)return;
+box.text=(box.body.innerText||box.body.textContent||'').replace(/\\r/g,'');
+box.richHtml=box.body.innerHTML||'';
+}
+
+function getDialogSelectionRange(box){
+var info=getDialogSelectionInfo(box);
+return info?info.range:null;
+}
+
+function hasDialogExpandedSelection(box){
+var info=getDialogSelectionInfo(box);
+return !!(info&&!info.collapsed);
+}
+
+function saveDialogSelection(box){
+var range=getDialogSelectionRange(box);
+if(!range)return false;
+try{
+box.savedRange=range.cloneRange();
+return true;
+}catch(e){}
+return false;
+}
+
+function placeDialogCaretAtEnd(box){
+if(!box||!box.body||!window.getSelection)return false;
+try{
+var range=document.createRange();
+range.selectNodeContents(box.body);
+range.collapse(false);
+var sel=window.getSelection();
+sel.removeAllRanges();
+sel.addRange(range);
+box.savedRange=range.cloneRange();
+return true;
+}catch(e){}
+return false;
+}
+
+function restoreDialogSelection(box){
+if(!box||!box.body||!window.getSelection)return false;
+box.body.focus();
+var sel=window.getSelection();
+if(!sel)return false;
+try{
+if(box.savedRange){
+sel.removeAllRanges();
+sel.addRange(box.savedRange);
+return true;
+}
+}catch(e){}
+return placeDialogCaretAtEnd(box);
+}
+
+function dialogCssColorToHex(v){
+var s=(v===undefined||v===null)?'':String(v).trim();
+if(!s)return '#222222';
+if(/^#[0-9a-f]{3}$/i.test(s)){
+return '#'+s.charAt(1)+s.charAt(1)+s.charAt(2)+s.charAt(2)+s.charAt(3)+s.charAt(3);
+}
+if(/^#[0-9a-f]{6}$/i.test(s))return s.toUpperCase();
+var rgb=s.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i);
+if(rgb){
+var r=Math.max(0,Math.min(255,parseInt(rgb[1],10)||0));
+var g=Math.max(0,Math.min(255,parseInt(rgb[2],10)||0));
+var b=Math.max(0,Math.min(255,parseInt(rgb[3],10)||0));
+return '#'+[r,g,b].map(function(n){var h=n.toString(16).toUpperCase();return h.length<2?('0'+h):h;}).join('');
+}
+var num=parseInt(s,10);
+if(isFinite(num)){
+num=Math.max(0,Math.min(0xFFFFFF,num));
+var h=num.toString(16).toUpperCase();
+while(h.length<6)h='0'+h;
+return '#'+h;
+}
+return xyForecastSafeColor(s,'#222222');
+}
+
+function captureDialogTypingStyle(box,keepColor){
+var style=ensureDialogTextStyle(box);
+try{style.bold=!!document.queryCommandState('bold');}catch(e){}
+try{style.italic=!!document.queryCommandState('italic');}catch(e){}
+try{style.underline=!!document.queryCommandState('underline');}catch(e){}
+if(keepColor!==true){
+try{style.color=dialogCssColorToHex(document.queryCommandValue('foreColor'));}catch(e){}
+}
+return style;
+}
+
+function updateDialogStoredTypingStyle(box,cmd,value){
+var style=ensureDialogTextStyle(box);
+if(cmd==='bold'||cmd==='italic'||cmd==='underline'){
+style[cmd]=!style[cmd];
+}else if(cmd==='foreColor'){
+style.color=dialogCssColorToHex(value);
+}
+return style;
+}
+
+function applyDialogTypingStyle(box){
+if(!box||!box.body||box.readOnly||box.allowRichEdit===false||!box.editing)return false;
+var info=getDialogSelectionInfo(box);
+if(!info||!info.collapsed)return false;
+var style=ensureDialogTextStyle(box);
+try{document.execCommand('styleWithCSS',false,true);}catch(e){}
+function syncCmd(cmd,desired){
+var current=false;
+try{current=!!document.queryCommandState(cmd);}catch(e){}
+if(current===!!desired)return;
+try{document.execCommand(cmd,false,null);}catch(e){}
+}
+syncCmd('bold',style.bold);
+syncCmd('italic',style.italic);
+syncCmd('underline',style.underline);
+var currentColor='#222222';
+try{currentColor=dialogCssColorToHex(document.queryCommandValue('foreColor'));}catch(e){}
+if(String(currentColor).toLowerCase()!==String(style.color).toLowerCase()){
+try{document.execCommand('foreColor',false,style.color);}catch(e){}
+}
+saveDialogSelection(box);
+return true;
+}
+
+function dialogExecRichCommand(box,cmd,value){
+if(!box||!box.body||box.readOnly||box.allowRichEdit===false)return;
+setDialogEditing(box,true);
+restoreDialogSelection(box);
+var hadExpandedSelection=hasDialogExpandedSelection(box);
+if(!hadExpandedSelection){
+updateDialogStoredTypingStyle(box,cmd,value);
+box.body.focus();
+applyDialogTypingStyle(box);
+saveDialogSelection(box);
+syncDialogTextSnapshot(box);
+syncDialogBoxSize(box);
+syncDialogEditPopup(box);
+updateDialogBoxesVisuals();
+return;
+}
+try{document.execCommand('styleWithCSS',false,true);}catch(e){}
+try{document.execCommand(cmd,false,value!==undefined?value:null);}catch(e){}
+box.body.focus();
+saveDialogSelection(box);
+syncDialogTextSnapshot(box);
+syncDialogBoxSize(box);
+syncDialogEditPopup(box);
+updateDialogBoxesVisuals();
+}
+
 function setDialogEditing(box,on){
 if(!box||!box.el||!box.body)return;
+if(on&&box.readOnly)return;
+if(on)setActiveDialogBox(box.id,false);
+if(!on)saveDialogSelection(box);
 box.editing=!!on;
 box.el.classList.toggle('editing',box.editing);
 box.body.contentEditable=box.editing?'true':'false';
 if(box.editing){
 box.body.focus();
-var range=document.createRange();
-range.selectNodeContents(box.body);
-range.collapse(false);
-var sel=window.getSelection();
-if(sel){sel.removeAllRanges();sel.addRange(range);}
+restoreDialogSelection(box);
+applyDialogTypingStyle(box);
 }
+}
+
+function setActiveDialogBox(id,keepEditPopup){
+var nextId=(id===undefined||id===null)?null:id;
+dialogActiveId=nextId;
+for(var i=0;i<dialogBoxes.length;i++){
+var b=dialogBoxes[i];
+if(!b||!b.el)continue;
+var on=(nextId!==null&&b.id===nextId);
+if(!on&&b.editing)setDialogEditing(b,false);
+b.el.classList.toggle('active',on);
+}
+if(dialogEditBoxId!==null&&dialogEditBoxId!==nextId&&!keepEditPopup){
+closeDialogEditPopup();
+}else if(dialogEditBoxId!==null&&dialogEditBoxId===nextId){
+var activeBox=getDialogById(dialogEditBoxId);
+if(activeBox){syncDialogEditPopup(activeBox);positionDialogEditPopup(activeBox);}
+}
+if(dialogFontBoxId!==null&&dialogFontBoxId!==nextId&&!keepEditPopup){
+closeDialogFontPopup();
+}else if(dialogFontBoxId!==null&&dialogFontBoxId===nextId){
+var fontBox=getDialogById(dialogFontBoxId);
+if(fontBox){syncDialogFontPopup(fontBox);}
+}
+}
+
+function ensureDialogEditPopup(){
+if(dialogEditPopupEl)return dialogEditPopupEl;
+var pop=document.createElement('div');
+pop.className='dialog-edit-popup';
+pop.innerHTML='<div class="dep-head"><span>Edit</span><button type="button" class="dep-close">X</button></div><div class="dep-row"><button type="button" class="dep-btn" data-style="bold">B</button><button type="button" class="dep-btn" data-style="italic">I</button><button type="button" class="dep-btn" data-style="underline">U</button></div><div class="dep-row"><label for="dialog-edit-color">Color</label><input type="color" id="dialog-edit-color" value="#222222"></div>';
+document.body.appendChild(pop);
+pop.querySelector('.dep-close').onclick=function(ev){ev.stopPropagation();closeDialogEditPopup();};
+var btns=pop.querySelectorAll('.dep-btn[data-style]');
+for(var i=0;i<btns.length;i++){
+btns[i].onmousedown=function(ev){ev.preventDefault();ev.stopPropagation();};
+btns[i].onclick=function(ev){
+ev.stopPropagation();
+var box=getDialogById(dialogEditBoxId);
+if(!box)return;
+var styleName=this.getAttribute('data-style');
+dialogExecRichCommand(box,styleName);
+};
+}
+var colorIn=pop.querySelector('#dialog-edit-color');
+colorIn.oninput=function(ev){
+ev.stopPropagation();
+var box=getDialogById(dialogEditBoxId);
+if(!box)return;
+dialogExecRichCommand(box,'foreColor',dialogCssColorToHex(this.value));
+};
+dialogEditPopupEl=pop;
+return dialogEditPopupEl;
+}
+
+function positionDialogEditPopup(box){
+if(!dialogEditPopupEl||!box||!box.el)return;
+var rect=box.el.getBoundingClientRect();
+var left=rect.right+10;
+var top=rect.top;
+dialogEditPopupEl.style.display='block';
+var pw=dialogEditPopupEl.offsetWidth||190;
+var ph=dialogEditPopupEl.offsetHeight||98;
+if(left+pw>window.innerWidth-10)left=Math.max(10,rect.left-pw-10);
+if(top+ph>window.innerHeight-10)top=Math.max(10,window.innerHeight-ph-10);
+dialogEditPopupEl.style.left=left+'px';
+dialogEditPopupEl.style.top=top+'px';
+}
+
+function syncDialogEditPopup(box){
+if(!dialogEditPopupEl||!box)return;
+if(box.readOnly||box.allowRichEdit===false){closeDialogEditPopup();return;}
+var selInfo=getDialogSelectionInfo(box);
+var useStoredStyle=!selInfo||selInfo.collapsed;
+var style=ensureDialogTextStyle(box);
+var btns=dialogEditPopupEl.querySelectorAll('.dep-btn[data-style]');
+for(var i=0;i<btns.length;i++){
+var k=btns[i].getAttribute('data-style');
+var on=!!style[k];
+if(!useStoredStyle){
+try{on=!!document.queryCommandState(k);}catch(e){}
+}
+btns[i].classList.toggle('on',on);
+}
+var colorIn=dialogEditPopupEl.querySelector('#dialog-edit-color');
+if(colorIn){
+var color=style.color||'#222222';
+if(!useStoredStyle){
+try{color=dialogCssColorToHex(document.queryCommandValue('foreColor'));}catch(e){}
+}
+if(String(colorIn.value).toLowerCase()!==String(color).toLowerCase())colorIn.value=color;
+}
+}
+
+function openDialogEditPopup(box){
+if(!box||box.readOnly||box.allowRichEdit===false)return;
+setActiveDialogBox(box.id,false);
+setDialogEditing(box,true);
+dialogEditBoxId=box.id;
+var pop=ensureDialogEditPopup();
+syncDialogEditPopup(box);
+positionDialogEditPopup(box);
+pop.style.display='block';
+}
+
+function closeDialogEditPopup(){
+dialogEditBoxId=null;
+if(dialogEditPopupEl)dialogEditPopupEl.style.display='none';
+}
+
+function ensureDialogFontPopup(){
+if(dialogFontPopupEl)return dialogFontPopupEl;
+var pop=document.createElement('div');
+pop.className='dialog-font-popup';
+pop.innerHTML='<div class="dfp-head"><span>Font Size</span><button type="button" class="dfp-close">X</button></div><div class="dfp-row"><label for="dialog-font-size-range" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Font</label><input type="range" id="dialog-font-size-range" min="8" max="36" step="1" value="11"><span id="dialog-font-size-val" class="dfp-val">11</span></div><div class="dfp-row" id="dialog-forecast-format-row" style="display:none;margin-top:8px"><label for="dialog-forecast-format" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Format</label><select id="dialog-forecast-format"><option value="float">Floating</option><option value="exp">Exponential</option></select></div><div class="dfp-row" id="dialog-forecast-decimals-row" style="display:none;margin-top:8px"><label for="dialog-forecast-decimals-range" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Decimals</label><input type="range" id="dialog-forecast-decimals-range" min="0" max="10" step="1" value="6"><span id="dialog-forecast-decimals-val" class="dfp-val">6</span></div>';
+document.body.appendChild(pop);
+pop.querySelector('.dfp-close').onclick=function(ev){ev.stopPropagation();closeDialogFontPopup();};
+var rangeEl=pop.querySelector('#dialog-font-size-range');
+rangeEl.oninput=function(ev){
+ev.stopPropagation();
+var box=getDialogById(dialogFontBoxId);
+if(!box)return;
+setDialogBoxFontSize(box,this.value);
+};
+var fmtSel=pop.querySelector('#dialog-forecast-format');
+if(fmtSel)fmtSel.onchange=function(ev){
+ev.stopPropagation();
+var box=getDialogById(dialogFontBoxId);
+if(!box||!isForecastDialogBox(box))return;
+box.forecastDialogFormat=(this.value==='exp')?'exp':'float';
+refreshForecastDialogBoxContent(box);
+};
+var decRangeEl=pop.querySelector('#dialog-forecast-decimals-range');
+if(decRangeEl)decRangeEl.oninput=function(ev){
+ev.stopPropagation();
+var box=getDialogById(dialogFontBoxId);
+if(!box||!isForecastDialogBox(box))return;
+box.forecastDialogDecimals=parseInt(this.value,10);
+refreshForecastDialogBoxContent(box);
+};
+dialogFontPopupEl=pop;
+return dialogFontPopupEl;
+}
+
+function positionDialogFontPopup(box){
+if(!dialogFontPopupEl||!box||!box.el)return;
+var rect=box.el.getBoundingClientRect();
+var left=rect.right+10;
+var top=rect.bottom+8;
+if(dialogEditPopupEl&&dialogEditPopupEl.style.display==='block'&&dialogEditBoxId===box.id){
+top=Math.max(rect.top,(dialogEditPopupEl.offsetTop||rect.top)+(dialogEditPopupEl.offsetHeight||0)+8);
+}
+dialogFontPopupEl.style.display='block';
+var pw=dialogFontPopupEl.offsetWidth||210;
+var ph=dialogFontPopupEl.offsetHeight||72;
+if(left+pw>window.innerWidth-10)left=Math.max(10,rect.left-pw-10);
+if(top+ph>window.innerHeight-10)top=Math.max(10,window.innerHeight-ph-10);
+dialogFontPopupEl.style.left=left+'px';
+dialogFontPopupEl.style.top=top+'px';
+}
+
+function syncDialogFontPopup(box){
+if(!dialogFontPopupEl||!box)return;
+var n=getDialogFontSizePx(box);
+var rangeEl=dialogFontPopupEl.querySelector('#dialog-font-size-range');
+var valEl=dialogFontPopupEl.querySelector('#dialog-font-size-val');
+if(rangeEl&&String(rangeEl.value)!==String(n))rangeEl.value=String(n);
+if(valEl)valEl.textContent=String(n);
+var fmtRow=dialogFontPopupEl.querySelector('#dialog-forecast-format-row');
+var fmtSel=dialogFontPopupEl.querySelector('#dialog-forecast-format');
+var decRow=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-row');
+var decRangeEl=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-range');
+var decValEl=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-val');
+var showForecast=isForecastDialogBox(box);
+if(fmtRow)fmtRow.style.display=showForecast?'flex':'none';
+if(decRow)decRow.style.display=showForecast?'flex':'none';
+if(showForecast){
+var fmt=getForecastDialogFormat(box);
+if(fmtSel&&fmtSel.value!==fmt)fmtSel.value=fmt;
+var d=getForecastDialogDecimals(box);
+if(decRangeEl&&String(decRangeEl.value)!==String(d))decRangeEl.value=String(d);
+if(decValEl)decValEl.textContent=String(d);
+}
+}
+
+function setDialogBoxFontSize(box,v){
+if(!box||!box.el)return;
+var n=parseInt(v,10);
+if(!isFinite(n))n=getDialogFontSizePx(box);
+n=Math.max(8,Math.min(36,n));
+box.fontSizePx=n;
+applyDialogFontToBox(box);
+syncDialogBoxSize(box);
+syncDialogFontPopup(box);
+updateDialogBoxesVisuals();
+}
+
+function openDialogFontPopup(box){
+if(!box)return;
+setActiveDialogBox(box.id,false);
+dialogFontBoxId=box.id;
+var pop=ensureDialogFontPopup();
+syncDialogFontPopup(box);
+positionDialogFontPopup(box);
+pop.style.display='block';
+}
+
+function closeDialogFontPopup(){
+dialogFontBoxId=null;
+if(dialogFontPopupEl)dialogFontPopupEl.style.display='none';
 }
 
 function ensureDialogPreview(){
@@ -3745,15 +4502,16 @@ function tgDialogMode(on){
 dialogMode=!!on;
 var act=document.getElementById('dlg-actions');
 var hint=document.getElementById('dlg-hint');
-var fontRow=document.getElementById('dlg-font-row');
 if(act)act.style.display=dialogMode?'flex':'none';
 if(hint)hint.style.display=dialogMode?'block':'none';
-if(fontRow)fontRow.style.display=dialogMode?'flex':'none';
 if(!dialogMode){
 dialogAddArmed=false;
 dialogConnectPendingId=null;
 hideDialogPreview();
 dialogBoxes.forEach(function(b){setDialogEditing(b,false);});
+setActiveDialogBox(null,false);
+closeDialogEditPopup();
+closeDialogFontPopup();
 document.getElementById('st').textContent='Dialog Box mode off';
 return;
 }
@@ -3774,6 +4532,9 @@ var b=dialogBoxes[i];
 if(b.el&&b.el.parentNode)b.el.parentNode.removeChild(b.el);
 dialogBoxes.splice(i,1);
 if(dialogConnectPendingId===id)dialogConnectPendingId=null;
+if(dialogActiveId===id)dialogActiveId=null;
+if(dialogEditBoxId===id)closeDialogEditPopup();
+if(dialogFontBoxId===id)closeDialogFontPopup();
 break;
 }
 }
@@ -3795,6 +4556,9 @@ if(el&&el.parentNode===container)container.removeChild(el);
 }
 dialogConnectPendingId=null;
 dialogAddArmed=dialogMode;
+dialogActiveId=null;
+closeDialogEditPopup();
+closeDialogFontPopup();
 hideDialogPreview();
 updateDialogBoxesVisuals();
 document.getElementById('st').textContent='All dialog boxes removed';
@@ -3815,6 +4579,18 @@ box.linkBtn.textContent='c';
 box.linkBtn.title='Connect to node';
 box.linkBtn.classList.remove('dialog-btn-disconnect');
 }
+}
+
+function refreshDialogCopyButton(box){
+if(!box||!box.copyBtn)return;
+box.copyBtn.style.display=isForecastDialogBox(box)?'inline-block':'none';
+}
+
+function refreshDialogEditButton(box){
+if(!box||!box.editBtn)return;
+var show=(box.allowRichEdit!==false)&&!box.readOnly;
+box.editBtn.style.display=show?'inline-block':'none';
+if(!show&&dialogEditBoxId===box.id)closeDialogEditPopup();
 }
 
 function startDialogConnect(id){
@@ -3850,7 +4626,7 @@ var p=dialogCanvasPosFromClient(clientX,clientY);
 if(!p)return null;
 var container=document.getElementById('dialog-box-container');
 if(!container)return null;
-var box={id:dialogIdSeed++,x:p.x+12,y:p.y+12,w:120,h:30,text:'Text',nodeIdx:-1,editing:false,el:null,body:null,tools:null,linkBtn:null};
+var box={id:dialogIdSeed++,x:p.x+12,y:p.y+12,w:120,h:30,text:'Text',nodeIdx:-1,editing:false,readOnly:false,allowRichEdit:true,textStyle:{bold:false,italic:false,underline:false,color:'#222222'},fontSizePx:dialogFontSize,savedRange:null,richHtml:null,forecastDialogData:null,forecastDialogFormat:'float',forecastDialogDecimals:6,el:null,body:null,tools:null,linkBtn:null,copyBtn:null,fontBtn:null,editBtn:null};
 var el=document.createElement('div');
 el.className='dialog-box';
 el.setAttribute('data-did',String(box.id));
@@ -3870,39 +4646,102 @@ return;
 }
 startDialogConnect(box.id);
 });
+var btnCopy=document.createElement('button');
+btnCopy.className='dialog-btn dialog-btn-copy';
+btnCopy.textContent='copy';
+btnCopy.title='Copy forecast data to clipboard';
+btnCopy.style.display='none';
+btnCopy.addEventListener('click',function(ev){
+ev.stopPropagation();
+copyForecastDialogBoxData(box);
+});
+var btnF=document.createElement('button');
+btnF.className='dialog-btn dialog-btn-font';
+btnF.textContent='f';
+btnF.title='Font size';
+btnF.addEventListener('click',function(ev){
+ev.stopPropagation();
+if(dialogFontBoxId===box.id&&dialogFontPopupEl&&dialogFontPopupEl.style.display==='block'){closeDialogFontPopup();return;}
+openDialogFontPopup(box);
+});
+var btnE=document.createElement('button');
+btnE.className='dialog-btn dialog-btn-edit';
+btnE.textContent='e';
+btnE.title='Edit text style';
+btnE.addEventListener('click',function(ev){
+ev.stopPropagation();
+if(dialogEditBoxId===box.id&&dialogEditPopupEl&&dialogEditPopupEl.style.display==='block'){closeDialogEditPopup();return;}
+openDialogEditPopup(box);
+});
 var btnX=document.createElement('button');
 btnX.className='dialog-btn dialog-btn-del';
 btnX.textContent='x';
 btnX.title='Delete';
 btnX.addEventListener('click',function(ev){ev.stopPropagation();removeDialogBoxById(box.id);});
 tools.appendChild(btnC);
+tools.appendChild(btnCopy);
+tools.appendChild(btnF);
+tools.appendChild(btnE);
 tools.appendChild(btnX);
 var body=document.createElement('div');
 body.className='dialog-body';
 body.contentEditable='false';
 body.textContent='Text';
+body.addEventListener('focus',function(){
+if(box.editing)applyDialogTypingStyle(box);
+if(dialogEditBoxId===box.id)syncDialogEditPopup(box);
+});
 body.addEventListener('dblclick',function(ev){
 ev.stopPropagation();
+if(box.readOnly)return;
 for(var i=0;i<dialogBoxes.length;i++){if(dialogBoxes[i].id!==box.id)setDialogEditing(dialogBoxes[i],false);}
 setDialogEditing(box,true);
 });
-body.addEventListener('input',function(){box.text=body.textContent||'';syncDialogBoxSize(box);});
+body.addEventListener('beforeinput',function(ev){
+if(!box.editing)return;
+var it=(ev&&ev.inputType)?String(ev.inputType):'';
+if(it.indexOf('insert')===0)applyDialogTypingStyle(box);
+});
+body.addEventListener('mouseup',function(){
+if(box.editing&&!hasDialogExpandedSelection(box))applyDialogTypingStyle(box);
+else saveDialogSelection(box);
+if(dialogEditBoxId===box.id)syncDialogEditPopup(box);
+});
+body.addEventListener('keyup',function(ev){
+if(box.editing&&!(ev&&((ev.ctrlKey||ev.metaKey||ev.altKey)))&&!hasDialogExpandedSelection(box))applyDialogTypingStyle(box);
+else saveDialogSelection(box);
+if(dialogEditBoxId===box.id)syncDialogEditPopup(box);
+});
+body.addEventListener('input',function(){
+syncDialogTextSnapshot(box);
+saveDialogSelection(box);
+syncDialogBoxSize(box);
+if(dialogEditBoxId===box.id)syncDialogEditPopup(box);
+});
 el.appendChild(tools);
 el.appendChild(body);
-el.addEventListener('mousedown',function(ev){ev.stopPropagation();});
-tools.addEventListener('mousedown',function(ev){
-if(!box.editing)return;
+el.addEventListener('mousedown',function(ev){
+if(ev.target&&ev.target.closest&&ev.target.closest('.dialog-edit-popup'))return;
+if(ev.target&&ev.target.closest&&ev.target.closest('.dialog-font-popup'))return;
+setActiveDialogBox(box.id,false);
+if(box.editing)return;
+if(ev.target&&ev.target.closest&&ev.target.closest('button'))return;
 ev.preventDefault();ev.stopPropagation();
 var rect=cvEl?cvEl.getBoundingClientRect():{left:0,top:0};
 dialogDrag={id:box.id,ox:ev.clientX-rect.left-box.x,oy:ev.clientY-rect.top-box.y};
 });
 container.appendChild(el);
-box.el=el;box.body=body;box.tools=tools;box.linkBtn=btnC;
+box.el=el;box.body=body;box.tools=tools;box.linkBtn=btnC;box.copyBtn=btnCopy;box.fontBtn=btnF;box.editBtn=btnE;
 dialogBoxes.push(box);
 applyDialogFontToBox(box);
+applyDialogTextStyle(box);
 refreshDialogConnectButton(box);
+refreshDialogCopyButton(box);
+refreshDialogEditButton(box);
+syncDialogTextSnapshot(box);
 syncDialogBoxSize(box);
 setDialogEditing(box,false);
+setActiveDialogBox(box.id,false);
 updateDialogBoxesVisuals();
 return box;
 }
@@ -4163,6 +5002,45 @@ ctx.lineWidth=Math.max(1,1.4*Math.min(sxScale,syScale));
 ctx.restore();
 }
 
+function buildDialogLinkRect(left,top,width,height){
+var w=Math.max(2,width||0),h=Math.max(2,height||0);
+return{left:left,top:top,width:w,height:h,right:left+w,bottom:top+h};
+}
+
+function getDialogLinkAnchorFromRect(rect,targetX,targetY,offsetPx){
+if(!rect)return null;
+var cx=rect.left+rect.width*0.5;
+var cy=rect.top+rect.height*0.5;
+var dx=targetX-cx;
+var dy=targetY-cy;
+if(Math.abs(dx)<1e-9&&Math.abs(dy)<1e-9)dx=1;
+var hw=Math.max(1,rect.width*0.5);
+var hh=Math.max(1,rect.height*0.5);
+var tx=(Math.abs(dx)<1e-9)?1e9:(hw/Math.abs(dx));
+var ty=(Math.abs(dy)<1e-9)?1e9:(hh/Math.abs(dy));
+var t=Math.min(tx,ty);
+var ax=cx+dx*t;
+var ay=cy+dy*t;
+var len=Math.sqrt(dx*dx+dy*dy);
+var out=isFinite(offsetPx)?offsetPx:0;
+if(len>1e-9&&out!==0){
+ax+=(dx/len)*out;
+ay+=(dy/len)*out;
+}
+var dl=Math.abs(ax-rect.left),dr=Math.abs(ax-rect.right),dt=Math.abs(ay-rect.top),db=Math.abs(ay-rect.bottom);
+var side='left',best=dl;
+if(dr<best){best=dr;side='right';}
+if(dt<best){best=dt;side='top';}
+if(db<best){side='bottom';}
+return{x:ax,y:ay,cx:cx,cy:cy,side:side};
+}
+
+function getDialogBoxClientLinkAnchor(box,targetX,targetY){
+if(!box||!box.el)return null;
+var r=box.el.getBoundingClientRect();
+return getDialogLinkAnchorFromRect(buildDialogLinkRect(r.left,r.top,r.width,r.height),targetX,targetY,1.2);
+}
+
 function updateDialogBoxesVisuals(){
 var layer=document.getElementById('dialog-link-layer');
 if(!layer||!cvEl)return;
@@ -4190,13 +5068,27 @@ pos3.project(ca);
 if(pos3.z>1)continue;
 var sx=(pos3.x*0.5+0.5)*rect.width+rect.left;
 var sy=(-pos3.y*0.5+0.5)*rect.height+rect.top;
-var bx=rect.left+b.x;
-var by=rect.top+b.y+(b.h||20)/2;
+var anchor=getDialogBoxClientLinkAnchor(b,sx,sy);
+if(!anchor)continue;
 ctx.strokeStyle='#FF5BFF';
-ctx.lineWidth=1.5;
-ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(bx,by);ctx.stroke();
+ ctx.lineWidth=1.5;
+ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(anchor.x,anchor.y);ctx.stroke();
+ctx.beginPath();ctx.arc(anchor.x,anchor.y,2.8,0,Math.PI*2);
+ctx.fillStyle='rgba(255,255,255,0.98)';
+ctx.fill();
+ctx.strokeStyle='rgba(255,91,255,0.96)';
+ctx.lineWidth=1.2;
+ctx.stroke();
 ctx.beginPath();ctx.arc(sx,sy,2.6,0,Math.PI*2);
 ctx.fillStyle='#2196F3';ctx.fill();
+ctx.strokeStyle='rgba(0,0,0,0.65)';
+ctx.lineWidth=1;
+ctx.stroke();
+}
+if(dialogEditBoxId!==null){
+var eb=getDialogById(dialogEditBoxId);
+if(eb){syncDialogEditPopup(eb);positionDialogEditPopup(eb);}
+else{closeDialogEditPopup();}
 }
 }
 
@@ -4226,6 +5118,25 @@ if(out.length===0)out.push('');
 return out;
 }
 
+function getDialogCanvasStyle(box){
+var out={bold:false,italic:false,underline:false,color:'#222222'};
+if(!box||!box.body||!window.getComputedStyle)return out;
+if(box.body.classList&&box.body.classList.contains('dialog-body-rich'))return out;
+try{
+var srcEl=box.body;
+var richEl=box.body.querySelector('span,b,strong,i,em,u,font');
+if(richEl)srcEl=richEl;
+var cs=window.getComputedStyle(srcEl);
+var fw=String(cs.fontWeight||'').toLowerCase();
+out.bold=(fw==='bold'||parseInt(fw,10)>=600);
+out.italic=String(cs.fontStyle||'').toLowerCase()==='italic';
+var td=String(cs.textDecoration||cs.textDecorationLine||'').toLowerCase();
+out.underline=td.indexOf('underline')>=0;
+out.color=dialogCssColorToHex(cs.color||'#222222');
+}catch(e){}
+return out;
+}
+
 function drawDialogBoxesOnCanvas(ctx,w,h){
 if(!dialogBoxes||dialogBoxes.length===0||!cvEl)return;
 var rect=cvEl.getBoundingClientRect();
@@ -4240,25 +5151,29 @@ var bx=b.x*sxScale,by=b.y*syScale;
 var baseScale=Math.max(0.2,Math.min(sxScale,syScale));
 var bw=Math.max(90*baseScale,(b.w||100)*sxScale);
 var bh=Math.max(24*baseScale,(b.h||24)*syScale);
-var dlgFs=Math.max(8,Math.round((dialogFontSize||11)*baseScale));
+var dlgFs=Math.max(8,Math.round(getDialogFontSizePx(b)*baseScale));
 var lh=Math.max(dlgFs+3,Math.ceil(dlgFs*1.35));
 var padX=Math.max(6,7*baseScale);
 var padY=Math.max(5,5*baseScale);
-ctx.font='600 '+dlgFs+'px Arial';
+var tStyle=getDialogCanvasStyle(b);
+var linkNodePt=null,linkAnchor=null;
+if(b.nodeIdx!==undefined&&b.nodeIdx!==null&&b.nodeIdx>=0&&b.nodeIdx<dispNodes.length&&isNodeVisibleNow(b.nodeIdx)){
+var sp=projectNodeToCanvas(b.nodeIdx,w,h);
+if(sp){
+linkNodePt=sp;
+}
+}
+ctx.font=(tStyle.italic?'italic ':'')+(tStyle.bold?'700 ':'600 ')+dlgFs+'px Arial';
 var txt=(b.text!==undefined&&b.text!==null)?String(b.text):'';
 var lines=wrapDialogTextForCanvas(ctx,txt,Math.max(12,bw-padX*2));
 var textH=lines.length*lh;
 var innerH=Math.max(22*baseScale,bh-padY*2);
 if(textH>innerH){innerH=textH;bh=innerH+padY*2;}
-if(b.nodeIdx!==undefined&&b.nodeIdx!==null&&b.nodeIdx>=0&&b.nodeIdx<dispNodes.length&&isNodeVisibleNow(b.nodeIdx)){
-var sp=projectNodeToCanvas(b.nodeIdx,w,h);
-if(sp){
+if(linkNodePt){
+linkAnchor=getDialogLinkAnchorFromRect(buildDialogLinkRect(bx,by,bw,bh),linkNodePt.x,linkNodePt.y,Math.max(1,1.1*baseScale));
 ctx.strokeStyle='#FF5BFF';
 ctx.lineWidth=Math.max(1,1.2*sxScale);
-ctx.beginPath();ctx.moveTo(sp.x,sp.y);ctx.lineTo(bx,by+bh*0.5);ctx.stroke();
-ctx.beginPath();ctx.arc(sp.x,sp.y,Math.max(2,2.4*sxScale),0,Math.PI*2);
-ctx.fillStyle='#2196F3';ctx.fill();
-}
+ctx.beginPath();ctx.moveTo(linkNodePt.x,linkNodePt.y);ctx.lineTo(linkAnchor.x,linkAnchor.y);ctx.stroke();
 }
 ctx.fillStyle='rgba(255,255,255,0.95)';
 ctx.strokeStyle='rgba(0,0,0,0.24)';
@@ -4278,10 +5193,42 @@ if(ta==='center'||ta==='right'||ta==='left')txtAlign=ta;
 }catch(e){}
 ctx.textAlign=txtAlign;
 ctx.textBaseline='top';
+ctx.font=(tStyle.italic?'italic ':'')+(tStyle.bold?'700 ':'600 ')+dlgFs+'px Arial';
+ctx.fillStyle=tStyle.color||'#222';
 var tx=(txtAlign==='center')?(bx+bw*0.5):((txtAlign==='right')?(bx+bw-padX):(bx+padX));
 var ty=by+padY+Math.max(0,(innerH-textH)*0.5);
-for(var li=0;li<lines.length;li++){ctx.fillText(lines[li],tx,ty+li*lh);}
+for(var li=0;li<lines.length;li++){
+var ly=ty+li*lh;
+ctx.fillText(lines[li],tx,ly);
+if(tStyle.underline&&lines[li]){
+var mw=ctx.measureText(lines[li]).width;
+var ux1=(txtAlign==='center')?(tx-mw*0.5):((txtAlign==='right')?(tx-mw):tx);
+var ux2=ux1+mw;
+var uy=ly+Math.max(1,Math.round(dlgFs*1.05));
+ctx.strokeStyle=tStyle.color||'#222';
+ctx.lineWidth=Math.max(1,0.9*baseScale);
+ctx.beginPath();ctx.moveTo(ux1,uy);ctx.lineTo(ux2,uy);ctx.stroke();
+}
+}
 ctx.restore();
+if(linkAnchor){
+ctx.beginPath();
+ctx.arc(linkAnchor.x,linkAnchor.y,Math.max(2.1,2.7*Math.min(sxScale,syScale)),0,Math.PI*2);
+ctx.fillStyle='rgba(255,255,255,0.98)';
+ctx.fill();
+ctx.strokeStyle='rgba(255,91,255,0.96)';
+ctx.lineWidth=Math.max(1,1.1*Math.min(sxScale,syScale));
+ctx.stroke();
+}
+if(linkNodePt){
+ctx.beginPath();
+ctx.arc(linkNodePt.x,linkNodePt.y,Math.max(2.0,2.5*Math.min(sxScale,syScale)),0,Math.PI*2);
+ctx.fillStyle='#2196F3';
+ctx.fill();
+ctx.strokeStyle='rgba(0,0,0,0.65)';
+ctx.lineWidth=Math.max(1,Math.min(1.2,1.0*Math.min(sxScale,syScale)));
+ctx.stroke();
+}
 }
 ctx.restore();
 }
@@ -4303,8 +5250,19 @@ updateDialogBoxesVisuals();
 document.addEventListener('mouseup',function(){dialogDrag=null;});
 document.addEventListener('mousedown',function(e){
 var inDlg=e.target&&e.target.closest&&e.target.closest('.dialog-box');
+var inDlgEdit=e.target&&e.target.closest&&e.target.closest('.dialog-edit-popup');
+var inDlgFont=e.target&&e.target.closest&&e.target.closest('.dialog-font-popup');
+if(inDlgEdit||inDlgFont)return;
 if(inDlg)return;
 for(var i=0;i<dialogBoxes.length;i++){setDialogEditing(dialogBoxes[i],false);}
+setActiveDialogBox(null,false);
+closeDialogEditPopup();
+closeDialogFontPopup();
+});
+document.addEventListener('selectionchange',function(){
+var box=getDialogById(dialogActiveId);
+if(!box||!box.editing||!box.body)return;
+if(saveDialogSelection(box)&&dialogEditBoxId===box.id)syncDialogEditPopup(box);
 });
 document.addEventListener('keydown',function(e){
 if(e.key==='Escape'){
@@ -4312,6 +5270,9 @@ dialogConnectPendingId=null;
 dialogAddArmed=false;
 hideDialogPreview();
 for(var i=0;i<dialogBoxes.length;i++){setDialogEditing(dialogBoxes[i],false);}
+setActiveDialogBox(null,false);
+closeDialogEditPopup();
+closeDialogFontPopup();
 }
 });
 }
@@ -4386,7 +5347,7 @@ const aspect=w/h;
 caPersp=new THREE.PerspectiveCamera(45,aspect,0.1,B*100);
 const frustumSize=B*2;
 caOrtho=new THREE.OrthographicCamera(frustumSize*aspect/-2,frustumSize*aspect/2,frustumSize/2,frustumSize/-2,0.1,B*100);
-ca=caPersp;
+ca=caOrtho;
 uc();
 re=createRendererWithFallback(cvEl,w,h);
 computeMeshBBox();
@@ -4576,7 +5537,8 @@ if(ei!==undefined&&ei<centroidRawColors.length){
 hoveredElemIdx=ei;
 var cv=centroidRawColors[ei];
 var realVal=centroidDataMin+cv*(centroidDataMax-centroidDataMin);
-showValueTooltip('E'+(EIDS[ei]||ei)+': '+realVal.toExponential(3),e.clientX,e.clientY,{kind:'elem',elemIdx:ei});
+var elemIdTxt='E'+(EIDS[ei]||ei);
+showValueTooltip(elemIdTxt+': '+formatLegendDrivenValue(realVal,'N/A'),e.clientX,e.clientY,{kind:'elem',elemIdx:ei,rawValue:realVal,idText:elemIdTxt});
 // Position highlight at face centroid
 var cx=(pickNodes[tri[0]][0]+pickNodes[tri[1]][0]+pickNodes[tri[2]][0])/3;
 var cy=(pickNodes[tri[0]][1]+pickNodes[tri[1]][1]+pickNodes[tri[2]][1])/3;
@@ -4593,7 +5555,8 @@ var nearest=tri[0];if(d1<d0&&d1<d2)nearest=tri[1];else if(d2<d0&&d2<d1)nearest=t
 var nv=rawColors?rawColors[nearest]:curColors[nearest];
 if(nv!==undefined&&nv!==null){
 var realVal=dataMin+nv*(dataMax-dataMin);
-showValueTooltip('N'+(NIDS[nearest]||nearest)+': '+realVal.toExponential(3),e.clientX,e.clientY,{kind:'node',elemIdx:visibleFaceElemIdx[fi]});
+var nodeIdTxt='N'+(NIDS[nearest]||nearest);
+showValueTooltip(nodeIdTxt+': '+formatLegendDrivenValue(realVal,'N/A'),e.clientX,e.clientY,{kind:'node',elemIdx:visibleFaceElemIdx[fi],rawValue:realVal,idText:nodeIdTxt});
 if(highlightSphere&&nearest<pickNodes.length){highlightSphere.position.set(pickNodes[nearest][0],pickNodes[nearest][1],pickNodes[nearest][2]);highlightSphere.visible=true;highlightedNodeIdx=nearest;}
 }else{hideValueTooltip();if(highlightSphere)highlightSphere.visible=false;highlightedNodeIdx=-1;}
 }
@@ -4747,31 +5710,38 @@ document.getElementById('st').textContent='Legend edit mode off';
 });
 legendOutsideDblInit=true;
 }
-pss();
-ulv(curMin,curMax);
-updateRotationCutUi(cutPlanes.rotation);
-updateLegendFormatControls();
-ugrl();
-initDialogBoxSystem();
-refreshHideAllConnectedButton();
-refreshLegendExtremeButtons();
-refreshAnimHarmonicButton();
-syncAllEdgesOptionAvailability();
-captureBaseHtmlForSaveFile();
-xyRenderSheetTabs();
-xyRefreshAnimInfoButton();
-refreshTableFormLinksButton();
-xyUpdateFontControls();
-if(!CENTROID_EXPORTED){
+safeViewerInitStep('increment list',function(){pss();});
+var ssEl=document.getElementById('ss');
+if(ssEl&&ssEl.options&&ssEl.options.length<=1)safeViewerInitStep('increment list fallback',function(){pssFallback();});
+safeViewerInitStep('output ui',function(){refreshDisplacementComponentUi();});
+safeViewerInitStep('legend values',function(){ulv(curMin,curMax);});
+safeViewerInitStep('legend format controls',function(){updateLegendFormatControls();});
+safeViewerInitStep('animation range labels',function(){ugrl();});
+safeViewerInitStep('rotation cut ui',function(){updateRotationCutUi(cutPlanes.rotation);});
+safeViewerInitStep('dialog box system',function(){initDialogBoxSystem();});
+safeViewerInitStep('hide connected button',function(){refreshHideAllConnectedButton();});
+safeViewerInitStep('legend extreme buttons',function(){refreshLegendExtremeButtons();});
+safeViewerInitStep('animation mode button',function(){refreshAnimHarmonicButton();});
+safeViewerInitStep('edge mode availability',function(){syncAllEdgesOptionAvailability();});
 var ccb=document.getElementById('centroid-mode');
 if(ccb){
+if(!CENTROID_EXPORTED||VIEWER_MODE==='harmonic'){
 ccb.checked=false;
 ccb.disabled=true;
+centroidMode=false;
 if(ccb.parentNode)ccb.parentNode.style.opacity='0.55';
-}
 var ci=document.getElementById('centroid-info');
-if(ci)ci.textContent='(disabled in export)';
+if(ci)ci.textContent='(not exported)';
+}else{
+ccb.disabled=false;
+if(ccb.parentNode)ccb.parentNode.style.opacity='1';
 }
+}
+captureBaseHtmlForSaveFile();
+safeViewerInitStep('xy sheet tabs',function(){xyRenderSheetTabs();});
+safeViewerInitStep('xy animation info button',function(){xyRefreshAnimInfoButton();});
+safeViewerInitStep('table form links button',function(){refreshTableFormLinksButton();});
+safeViewerInitStep('xy font controls',function(){xyUpdateFontControls();});
 if(!xyFontPopupInit){
 document.addEventListener('mousedown',function(e){
 var pop=document.getElementById('xy-font-popup');
@@ -4799,17 +5769,14 @@ console.log('GIF worker loaded');})
 .catch(function(e){console.warn('GIF worker load failed:',e);});
 }catch(e){}
 setTimeout(function(){
-try{
+safeViewerInitStep('initial mesh load',function(){
 if(IS&&hasStateData(currentVar,IS)){
 document.getElementById('ss').value=IS;
 osc();
 }else{
 cm(ON,getInitialColors());
 }
-}catch(e){
-console.error('Initial mesh load failed:',e);
-document.getElementById('st').textContent='Initial mesh load failed: '+e.message;
-}
+});
 },40);
 an();
 }
@@ -5218,7 +6185,7 @@ var idHeader='ID - Node';
 if(allElem)idHeader='ID - Element';
 var html='<table id="table-form-table"><thead><tr><th data-col="0">'+idHeader+'</th><th data-col="1">Value ('+currentVar+')</th></tr></thead><tbody>';
 rows.forEach(function(r,rowIdx){
-var valStr=r.value!==null?r.value.toExponential(4):'N/A';
+var valStr=(r.value!==null)?formatLegendDrivenValue(r.value,'N/A'):'N/A';
 var textColor=(r.value!==null)?getContrastColor(r.bgColor):'#333';
 var rKind=r.isElem?'E':'N';
 var rIdx=(r.srcIdx!==undefined&&r.srcIdx!==null)?r.srcIdx:-1;
@@ -5552,7 +6519,7 @@ hVals.push(tfBuildCopyCellHtml(td,c));
 }
 }
 if(vals.length>0){
-lines.push(vals.join('\t'));
+lines.push(vals.join('\\t'));
 htmlRows.push('<tr>'+hVals.join('')+'</tr>');
 }
 }
@@ -5569,7 +6536,7 @@ var td=tr.querySelector('td[data-col="'+c+'"]');
 vals.push(td?td.textContent.trim():'');
 hVals.push(tfBuildCopyCellHtml(td,c));
 });
-lines.push(vals.join('\t'));
+lines.push(vals.join('\\t'));
 htmlRows.push('<tr>'+hVals.join('')+'</tr>');
 });
 }
@@ -5643,10 +6610,10 @@ lbl.className='pinned-label';
 lbl.style.fontSize=valueInfoFontSize+'px';
 var nv=rawColors?rawColors[nodeIdx]:curColors[nodeIdx];
 var realVal=(nv!==undefined&&nv!==null)?dataMin+nv*(dataMax-dataMin):0;
-lbl.innerHTML='<span class="pn-node">N'+(NIDS[nodeIdx]||nodeIdx)+'</span> <span class="pn-val">'+realVal.toExponential(3)+'</span>';
+lbl.innerHTML='<span class="pn-node">N'+(NIDS[nodeIdx]||nodeIdx)+'</span> <span class="pn-val">'+formatLegendDrivenValue(realVal,'N/A')+'</span>';
 container.appendChild(lbl);
 pinnedLabels.push(lbl);
-document.getElementById('st').textContent='Pinned N'+(NIDS[nodeIdx]||nodeIdx)+': '+realVal.toExponential(3)+' ('+pinnedNodes.length+' pinned)';
+document.getElementById('st').textContent='Pinned N'+(NIDS[nodeIdx]||nodeIdx)+': '+formatLegendDrivenValue(realVal,'N/A')+' ('+pinnedNodes.length+' pinned)';
 showTableFormIfMultiple();
 }
 
@@ -5682,7 +6649,7 @@ pinnedMarkers[i].position.set(dispNodes[ni][0],dispNodes[ni][1],dispNodes[ni][2]
 // Update value text
 var nv=rawColors?rawColors[ni]:(curColors?curColors[ni]:null);
 var realVal=(nv!==undefined&&nv!==null)?dataMin+nv*(dataMax-dataMin):0;
-pinnedLabels[i].innerHTML='<span class="pn-node">N'+(NIDS[ni]||ni)+'</span> <span class="pn-val">'+realVal.toExponential(3)+'</span>';
+pinnedLabels[i].innerHTML='<span class="pn-node">N'+(NIDS[ni]||ni)+'</span> <span class="pn-val">'+formatLegendDrivenValue(realVal,'N/A')+'</span>';
 pinnedLabels[i].style.fontSize=valueInfoFontSize+'px';
 }
 if(pinnedElems.length>0)updatePinnedElemValues();
@@ -5746,7 +6713,7 @@ if(!sp)continue;
 if(hasCuts&&!isPointVisibleByCuts(dispNodes[ni],cuts))continue;
 var nv=rawColors?rawColors[ni]:(curColors?curColors[ni]:null);
 var realVal=(nv!==undefined&&nv!==null)?dataMin+nv*(dataMax-dataMin):0;
-var txt='N'+(NIDS[ni]||ni)+': '+realVal.toExponential(3);
+var txt='N'+(NIDS[ni]||ni)+': '+formatLegendDrivenValue(realVal,'N/A');
 ctx.font='600 '+valueInfoFontSize+'px Arial';
 var tw=ctx.measureText(txt).width;
 var pad=5,bx=sp.x+10,by=sp.y-8;
@@ -5765,7 +6732,7 @@ var nodeW=ctx.measureText('N'+(NIDS[ni]||ni)).width;
 ctx.fillStyle='#4FC3F7';ctx.font='600 '+(valueInfoFontSize*0.9)+'px Arial';
 ctx.fillText('N'+(NIDS[ni]||ni),bx,by+pad);
 ctx.fillStyle='#FFD54F';ctx.font='600 '+valueInfoFontSize+'px Arial';
-ctx.fillText(realVal.toExponential(3),bx+nodeW+4,by+pad);
+ctx.fillText(formatLegendDrivenValue(realVal,'N/A'),bx+nodeW+4,by+pad);
 }
 ctx.restore();
 }
@@ -5829,10 +6796,10 @@ lbl.className='pinned-label';
 lbl.style.fontSize=valueInfoFontSize+'px';
 var cv=centroidRawColors&&elemIdx<centroidRawColors.length?centroidRawColors[elemIdx]:null;
 var realVal=(cv!==null&&cv!==undefined)?centroidDataMin+cv*(centroidDataMax-centroidDataMin):0;
-lbl.innerHTML='<span class="pn-elem">E'+(EIDS[elemIdx]||elemIdx)+'</span> <span class="pn-val">'+realVal.toExponential(3)+'</span>';
+lbl.innerHTML='<span class="pn-elem">E'+(EIDS[elemIdx]||elemIdx)+'</span> <span class="pn-val">'+formatLegendDrivenValue(realVal,'N/A')+'</span>';
 container.appendChild(lbl);
 pinnedElemLabels.push(lbl);
-document.getElementById('st').textContent='Pinned E'+(EIDS[elemIdx]||elemIdx)+': '+realVal.toExponential(3)+' ('+(pinnedNodes.length+pinnedElems.length)+' pinned)';
+document.getElementById('st').textContent='Pinned E'+(EIDS[elemIdx]||elemIdx)+': '+formatLegendDrivenValue(realVal,'N/A')+' ('+(pinnedNodes.length+pinnedElems.length)+' pinned)';
 showTableFormIfMultiple();
 }
 
@@ -5851,7 +6818,7 @@ if(ctr)pinnedElemMarkers[i].position.set(ctr.x,ctr.y,ctr.z);
 // Update value
 var cv=centroidRawColors&&ei<centroidRawColors.length?centroidRawColors[ei]:null;
 var realVal=(cv!==null&&cv!==undefined)?centroidDataMin+cv*(centroidDataMax-centroidDataMin):0;
-pinnedElemLabels[i].innerHTML='<span class="pn-elem">E'+(EIDS[ei]||ei)+'</span> <span class="pn-val">'+realVal.toExponential(3)+'</span>';
+pinnedElemLabels[i].innerHTML='<span class="pn-elem">E'+(EIDS[ei]||ei)+'</span> <span class="pn-val">'+formatLegendDrivenValue(realVal,'N/A')+'</span>';
 pinnedElemLabels[i].style.fontSize=valueInfoFontSize+'px';
 }
 }
@@ -5912,7 +6879,7 @@ if(!isPointVisibleByCuts([mp.x,mp.y,mp.z],cuts))continue;
 }
 var cv=centroidRawColors&&ei<centroidRawColors.length?centroidRawColors[ei]:null;
 var realVal=(cv!==null&&cv!==undefined)?centroidDataMin+cv*(centroidDataMax-centroidDataMin):0;
-var txt='E'+(EIDS[ei]||ei)+': '+realVal.toExponential(3);
+var txt='E'+(EIDS[ei]||ei)+': '+formatLegendDrivenValue(realVal,'N/A');
 ctx.font='600 '+valueInfoFontSize+'px Arial';
 var tw=ctx.measureText(txt).width;
 var pad=5,bx=sp.x+10,by=sp.y-8;
@@ -5931,7 +6898,7 @@ var elemW=ctx.measureText('E'+(EIDS[ei]||ei)).width;
 ctx.fillStyle='#81C784';ctx.font='600 '+(valueInfoFontSize*0.9)+'px Arial';
 ctx.fillText('E'+(EIDS[ei]||ei),bx,by+pad);
 ctx.fillStyle='#FFD54F';ctx.font='600 '+valueInfoFontSize+'px Arial';
-ctx.fillText(realVal.toExponential(3),bx+elemW+4,by+pad);
+ctx.fillText(formatLegendDrivenValue(realVal,'N/A'),bx+elemW+4,by+pad);
 }
 ctx.restore();
 }
@@ -5992,8 +6959,8 @@ var sdNodes=getStateNodes(cst);
 if(sdNodes){
 cn=[];
 for(var i=0;i<ON.length;i++){
-var o=ON[i],u=(sdNodes[i]||[0,0,0]);
-cn.push([o[0]+u[0]*cs,o[1]+u[1]*cs,o[2]+u[2]*cs]);
+var o=ON[i],d=(sdNodes[i]||o);
+cn.push([o[0]+(d[0]-o[0])*cs,o[1]+(d[1]-o[1])*cs,o[2]+(d[2]-o[2])*cs]);
 }
 }
 var drawColors=noContour?null:rawColors;
@@ -6010,6 +6977,13 @@ updatePinnedPositions();
 }
 }
 function tgCentroid(on){
+if(on&&!CENTROID_EXPORTED){
+centroidMode=false;
+var ccb=document.getElementById('centroid-mode');
+if(ccb)ccb.checked=false;
+document.getElementById('st').textContent='Centroid data not exported';
+return;
+}
 centroidMode=on;
 var loc=VAR_LOCS[currentVar];
 var dcCb=document.getElementById('dc');
@@ -6102,13 +7076,77 @@ cm(getRenderNodes(),drawColors);
 }
 }
 function clamp01(v){return Math.max(0,Math.min(1,v));}
-function legendWarp(t){return Math.pow(clamp01(t),1.45);} // more blue bands than green/yellow
-function legendBaseColor(t){
-var tw=legendWarp(t);
+function normalizeLegendColorMapId(v){
+return (String(v)==='2')?'2':'1';
+}
+function legendClassicWarp(t){return Math.pow(clamp01(t),1.45);}
+function getColormap1ContinuousColor(t){
+var tw=legendClassicWarp(t);
 var h=(1-tw)*0.7;
 var c=new THREE.Color();
 c.setHSL(h,1,0.5);
 return c;
+}
+function getColormap1DiscreteHex(levelIdx,levelCount){
+var n=parseInt(levelCount,10);
+if(!isFinite(n))n=N_DISC;
+if(n<2)n=2;
+if(n>15)n=15;
+var idx=Math.max(0,Math.min(n-1,parseInt(levelIdx,10)||0));
+var den=Math.max(1,n-1);
+var tBand=1-(idx/den);
+if(n>=5&&idx===0)tBand=1.00;
+else if(n>=5&&idx===1)tBand=0.95;
+else if(n>=5&&idx===2)tBand=0.90;
+else if(n>=5&&idx===3)tBand=0.80;
+else if(n>=5&&idx===4)tBand=0.68;
+else if(n===4&&idx===0)tBand=1.00;
+else if(n===4&&idx===1)tBand=0.92;
+else if(n===4&&idx===2)tBand=0.80;
+else if(n===4&&idx===3)tBand=0.68;
+else if(n===3&&idx===0)tBand=1.00;
+else if(n===3&&idx===1)tBand=0.80;
+else if(n===3&&idx===2)tBand=0.68;
+else if(n===2&&idx===0)tBand=1.00;
+else if(n===2&&idx===1)tBand=0.75;
+return '#'+getColormap1ContinuousColor(tBand).getHexString();
+}
+// Extracted from the local Mentat installation:
+// C:\Program Files\MSC.Software\Marc\2020.1.0\mentat2020.1\bin\whitemap -> colormap_002 contour ramp.
+const MENTAT_COLORMAP2_HEX=['#0000ff','#1200ed','#2300dc','#3500ca','#4600b9','#5800a7','#6a0095','#7b0084','#8d0072','#9e0061','#b0004f','#c2003d','#d3002c','#e5001a','#f60009','#ff0900','#ff1a00','#ff2c00','#ff3d00','#ff4f00','#ff6100','#ff7200','#ff8400','#ff9500','#ffa700','#ffb900','#ffca00','#ffdc00','#ffed00','#ffff00'];
+function getMentatColormap2Pos(t){
+return clamp01(t)*(MENTAT_COLORMAP2_HEX.length-1);
+}
+function getMentatColormap2DiscreteHex(levelIdx,levelCount){
+var n=parseInt(levelCount,10);
+if(!isFinite(n))n=N_DISC;
+if(n<2)n=2;
+if(n>15)n=15;
+var idx=Math.max(0,Math.min(n-1,parseInt(levelIdx,10)||0));
+var den=Math.max(1,n-1);
+var t=1-(idx/den);
+var pos=Math.round(getMentatColormap2Pos(t));
+pos=Math.max(0,Math.min(MENTAT_COLORMAP2_HEX.length-1,pos));
+return MENTAT_COLORMAP2_HEX[pos];
+}
+function getMentatColormap2ContinuousColor(t){
+var pos=getMentatColormap2Pos(t);
+var lo=Math.floor(pos);
+var hi=Math.min(MENTAT_COLORMAP2_HEX.length-1,lo+1);
+var a=pos-lo;
+var c1=new THREE.Color(MENTAT_COLORMAP2_HEX[lo]);
+if(hi===lo)return c1;
+var c2=new THREE.Color(MENTAT_COLORMAP2_HEX[hi]);
+return c1.lerp(c2,a);
+}
+function getLegendContinuousColorForMap(mapId,t){
+return normalizeLegendColorMapId(mapId)==='2'?getMentatColormap2ContinuousColor(t):getColormap1ContinuousColor(t);
+}
+function getLegendDiscreteHexForMap(mapId,levelIdx,levelCount){
+return normalizeLegendColorMapId(mapId)==='2'?getMentatColormap2DiscreteHex(levelIdx,levelCount):getColormap1DiscreteHex(levelIdx,levelCount);
+}
+function legendBaseColor(t){
+return getLegendContinuousColorForMap(legendColorMapId,t);
 }
 function getBaseLegendHex(t){return '#'+legendBaseColor(t).getHexString();}
 function buildLegendGradientCSS(direction){
@@ -6146,29 +7184,8 @@ if(!isFinite(n))n=N_DISC;
 if(n<2)n=2;
 if(n>15)n=15;
 var cols=[];
-var den=Math.max(1,n-1);
 for(var i=0;i<n;i++){
-var tBand=1-(i/den);
-cols.push(getBaseLegendHex(tBand));
-}
-if(n>=5){
-cols[0]=getBaseLegendHex(1.00);
-cols[1]=getBaseLegendHex(0.95);
-cols[2]=getBaseLegendHex(0.90);
-cols[3]=getBaseLegendHex(0.80);
-cols[4]=getBaseLegendHex(0.68);
-}else if(n===4){
-cols[0]=getBaseLegendHex(1.00);
-cols[1]=getBaseLegendHex(0.92);
-cols[2]=getBaseLegendHex(0.80);
-cols[3]=getBaseLegendHex(0.68);
-}else if(n===3){
-cols[0]=getBaseLegendHex(1.00);
-cols[1]=getBaseLegendHex(0.80);
-cols[2]=getBaseLegendHex(0.68);
-}else if(n===2){
-cols[0]=getBaseLegendHex(1.00);
-cols[1]=getBaseLegendHex(0.75);
+cols.push(getLegendDiscreteHexForMap(legendColorMapId,i,n));
 }
 return cols;
 }
@@ -6185,6 +7202,30 @@ if(dec>8)dec=8;
 return Number(v).toFixed(dec);
 }
 return v.toExponential(2);
+}
+function formatLegendDrivenValue(v,nullText){
+var txt=(nullText===undefined||nullText===null)?'N/A':String(nullText);
+var num=Number(v);
+if(!isFinite(num))return txt;
+return formatLegendNumber(num);
+}
+function refreshValueTooltipFormat(){
+if(valTooltipInvalidUntilMove||!lastValueTooltipInfo)return;
+var tt=document.getElementById('val-tooltip');
+if(!tt||tt.style.display==='none')return;
+if(!lastValueTooltipInfo.idText)return;
+var num=Number(lastValueTooltipInfo.rawValue);
+if(!isFinite(num))return;
+var txt=lastValueTooltipInfo.idText+': '+formatLegendDrivenValue(num,'N/A');
+tt.textContent=txt;
+lastValueTooltipInfo.text=txt;
+}
+function refreshLegendDrivenValueDisplays(){
+refreshValueTooltipFormat();
+if(pinnedNodes.length>0||pinnedElems.length>0)updatePinnedValues();
+if(tableFormVisible)updateTableForm();
+if(legendMaxMode||legendMinMode)updateLegendExtremaTargets();
+if(measMode!=='off'&&measNodes.length>=2)updateMeasurement();
 }
 function updateLegendFormatControls(){
 var fmtSel=document.getElementById('leg-format');
@@ -6215,6 +7256,7 @@ ulv(curMin,curMax);
 updGrad();
 updCb();
 if(cst&&AD[cst])rebuildCurrentMeshColors();
+refreshLegendDrivenValueDisplays();
 document.getElementById('st').textContent='Legend format: '+(legendValueFormat==='float'?'Floating':'Exponential');
 }
 function setLegFloatDecimals(n){
@@ -6229,6 +7271,7 @@ ulv(curMin,curMax);
 updGrad();
 updCb();
 if(cst&&AD[cst])rebuildCurrentMeshColors();
+refreshLegendDrivenValueDisplays();
 document.getElementById('st').textContent='Legend floating decimals: '+d;
 }
 function setLegFontSize(sz){
@@ -6312,7 +7355,7 @@ if(sd[mxKey]>gMax)gMax=sd[mxKey];
 }
 }
 if(!isFinite(gMin)){
-var allStateIds=(OUT_STATE_INDEX&&OUT_STATE_INDEX[currentVar])?OUT_STATE_INDEX[currentVar]:[];
+var allStateIds=getVarStateIds(currentVar);
 for(var ai=0;ai<allStateIds.length;ai++){
 var k=allStateIds[ai];
 var kd=getStateData(currentVar,k);
@@ -6360,6 +7403,9 @@ if(idx<0||idx>=N_DISC)return '#808080';
 if(hasCustomLegend()){
 var hx=normalizeHexColor(legendCustomColors[idx]);
 if(hx)return hx;
+}
+if(discreteMode){
+return getLegendDiscreteHexForMap(legendColorMapId,idx,N_DISC);
 }
 var den=Math.max(1,N_DISC-1);
 var tBand=1-(idx/den);
@@ -6496,14 +7542,15 @@ legendCustomColors=null;
 legendEditMode=false;
 legendEditFocusValue=-1;
 legendEditFocusColor=-1;
-legendValueFormat='exp';
-legendFloatDecimals=6;
-N_DISC=10;
-legFontSize=12;
+legendValueFormat='float';
+legendFloatDecimals=3;
+legendColorMapId='1';
+N_DISC=12;
+legFontSize=14;
 updateLegendFormatControls();
-var lvlSel=document.getElementById('leg-levels');if(lvlSel)lvlSel.value='10';
-var fs=document.getElementById('leg-font-size');if(fs)fs.value='12';
-var fv=document.getElementById('leg-font-size-val');if(fv)fv.textContent='12';
+var lvlSel=document.getElementById('leg-levels');if(lvlSel)lvlSel.value='12';
+var fs=document.getElementById('leg-font-size');if(fs)fs.value='14';
+var fv=document.getElementById('leg-font-size-val');if(fv)fv.textContent='14';
 updateLegendRangeInputs();
 ulv(curMin,curMax);
 updGrad();
@@ -6588,16 +7635,48 @@ if(cut)cuts.push(cut);
 });
 var rotCut=getRotationCutData();
 if(rotCut&&rotCut.enabled){
+if(rotCut.state.angle2On&&rotCut.secondary){
+cuts.push({
+type:'rotation-sector',
+axisDir:[rotCut.axisDir.x,rotCut.axisDir.y,rotCut.axisDir.z],
+refPoint:[rotCut.refPoint.x,rotCut.refPoint.y,rotCut.refPoint.z],
+baseVisible:[rotCut.baseVisible.x,rotCut.baseVisible.y,rotCut.baseVisible.z],
+angle1:rotCut.primarySignedAngle,
+angle2:rotCut.secondarySignedAngle
+});
+}else{
 cuts.push({
 type:'rotation',
 normal:[rotCut.clipNormal.x,rotCut.clipNormal.y,rotCut.clipNormal.z],
 constant:rotCut.constant
 });
 }
+}
 return cuts;
 }
 function getCutSignedDistance(p,cut){
-if(!p||!cut||!cut.normal)return -Infinity;
+if(!p||!cut)return -Infinity;
+if(cut.type==='rotation-sector'&&cut.axisDir&&cut.refPoint&&cut.baseVisible){
+var ax=cut.axisDir[0],ay=cut.axisDir[1],az=cut.axisDir[2];
+var px0=p[0]-cut.refPoint[0],py0=p[1]-cut.refPoint[1],pz0=p[2]-cut.refPoint[2];
+var dotAxis=(px0*ax)+(py0*ay)+(pz0*az);
+var qx=px0-dotAxis*ax,qy=py0-dotAxis*ay,qz=pz0-dotAxis*az;
+var qLen=Math.sqrt(qx*qx+qy*qy+qz*qz);
+if(!(qLen>1e-12))return 1;
+qx/=qLen;qy/=qLen;qz/=qLen;
+var bx=cut.baseVisible[0],by=cut.baseVisible[1],bz=cut.baseVisible[2];
+var bLen=Math.sqrt(bx*bx+by*by+bz*bz);
+if(!(bLen>1e-12))return -Infinity;
+bx/=bLen;by/=bLen;bz/=bLen;
+var cx=(by*qz)-(bz*qy),cy=(bz*qx)-(bx*qz),cz=(bx*qy)-(by*qx);
+var phi=Math.atan2((ax*cx)+(ay*cy)+(az*cz),(bx*qx)+(by*qy)+(bz*qz));
+var delta=Math.atan2(Math.sin(cut.angle2-cut.angle1),Math.cos(cut.angle2-cut.angle1));
+var mid=cut.angle1+(delta*0.5);
+var diff=Math.atan2(Math.sin(phi-mid),Math.cos(phi-mid));
+var half=(Math.PI-Math.abs(delta))*0.5;
+return half-Math.abs(diff);
+}
+if(!cut.normal)return -Infinity;
 return (p[0]*cut.normal[0])+(p[1]*cut.normal[1])+(p[2]*cut.normal[2])+cut.constant;
 }
 function isPointVisibleByCuts(p,cuts){
@@ -6736,7 +7815,7 @@ if(c&&c.on)parts.push(a+':'+c.pos+':'+c.dir);
 else parts.push(a+':off');
 }
 var rc=sanitizeRotationCutState(cutPlanes.rotation||{});
-if(rc.on)parts.push('rot:'+rc.axis+':'+rc.angle+':'+rc.dir+':'+rc.refA+':'+rc.refB);
+if(rc.on)parts.push('rot:'+rc.axis+':'+rc.angle+':'+rc.dir+':'+(rc.angle2On?'on':'off')+':'+rc.angle2+':'+rc.dir2+':'+rc.refA+':'+rc.refB);
 else parts.push('rot:off');
 return parts.join('|');
 }
@@ -6894,13 +7973,8 @@ if(vrfGhostEg){sc.remove(vrfGhostEg);vrfGhostEg=null;}
 ms=null;eg=null;featureEg=null;
 
 // Harmonic mode can force external surface only for higher performance.
-// Fallback to full faces if boundary extraction was empty.
-var fullFaces=getFullFaces();
-var fullFaceElemMap=getFullFaceElemMap();
-var extFaces=(BF&&BF.length)?BF:fullFaces;
-var extFaceElemMap=(BFE&&BFE.length)?BFE:fullFaceElemMap;
-var faceSrc=EXTERNAL_SURFACE_ONLY?extFaces:fullFaces;
-var faceElemSrc=EXTERNAL_SURFACE_ONLY?extFaceElemMap:fullFaceElemMap;
+var faceSrc=EXTERNAL_SURFACE_ONLY?BF:getFullFaces();
+var faceElemSrc=EXTERNAL_SURFACE_ONLY?BFE:getFullFaceElemMap();
 visibleFaces=[];
 visibleFaceElemIdx=[];
 visibleElemMap=Object.create(null);
@@ -7160,6 +8234,7 @@ var uMin=parseFloat(uMinStr),uMax=parseFloat(uMaxStr);
 if(isNaN(uMin)||isNaN(uMax)){document.getElementById('st').textContent='Invalid min/max values';return;}
 if(uMin>=uMax){document.getElementById('st').textContent='Min must be less than Max';return;}
 curMin=uMin;curMax=uMax;
+legendAutoResetPending=false;
 if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
 updateLegendRangeInputs();
 ulv(curMin,curMax);
@@ -7180,6 +8255,7 @@ document.getElementById('st').textContent='Legend range applied: '+formatLegendN
 // Reset legend to data range
 function resetLegRange(){
 curMin=dataMin;curMax=dataMax;
+legendAutoResetPending=false;
 if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
 updateLegendRangeInputs();
 ulv(curMin,curMax);
@@ -7200,6 +8276,12 @@ document.getElementById('st').textContent='Legend range reset to data range';
 function gc(t){
 t=clamp01(t);
 if(discreteMode){
+if(!hasCustomLegend()){
+var idx=Math.floor((1-t)*N_DISC);
+if(idx<0)idx=0;
+if(idx>=N_DISC)idx=N_DISC-1;
+return new THREE.Color(getLegendDiscreteHexForMap(legendColorMapId,idx,N_DISC));
+}
 t=Math.floor(t*N_DISC)/N_DISC;
 }
 return legendBaseColor(t);
@@ -7215,24 +8297,89 @@ caOrtho.position.copy(pos);caOrtho.up.copy(up);caOrtho.lookAt(tg);
 const zoomFactor=B*3/camDist;caOrtho.zoom=zoomFactor;caOrtho.updateProjectionMatrix();
 }
 
+function viewerInitWarn(step,e){
+console.error('[T16] Init step failed ['+step+']:',e);
+var stEl=document.getElementById('st');
+if(stEl){
+var msg='Warning ['+step+']: '+(e&&e.message?e.message:e);
+if(String(stEl.textContent||'').indexOf('ERROR:')!==0)stEl.textContent=msg;
+}
+}
+
+function safeViewerInitStep(step,fn){
+try{
+return fn();
+}catch(e){
+viewerInitWarn(step,e);
+return null;
+}
+}
+
+function pssFallback(){
+const sel=document.getElementById('ss');
+if(!sel)return;
+if(!SL||SL.length===0){
+sel.innerHTML='<option value="">No increments</option>';
+return;
+}
+sel.innerHTML='<option value="">-- Select Increment --</option>';
+SL.forEach(function(s){
+const o=document.createElement('option');
+o.value=s&&s.id!==undefined&&s.id!==null?s.id:'';
+var inc=(s&&s.increment!==undefined&&s.increment!==null)?s.increment:'?';
+o.textContent='Inc '+inc;
+sel.appendChild(o);
+});
+}
+
 function pss(){
 const sel=document.getElementById('ss');
 if(SL.length===0){sel.innerHTML='<option value="">No increments</option>';return;}
 sel.innerHTML='<option value="">-- Select Increment --</option>';
-SL.forEach(s=>{const o=document.createElement('option');o.value=s.id;o.textContent='Inc '+s.increment+' (t='+s.time.toFixed(5)+')';sel.appendChild(o);});
+SL.forEach(function(s){
+const o=document.createElement('option');
+o.value=s.id;
+var timeVal=Number(s.time);
+if(!isFinite(timeVal))timeVal=0;
+var freqVal=Number(s.frequency);
+if(!isFinite(freqVal)){
+freqVal=NaN;
+if(VIEWER_MODE==='harmonic'&&isFinite(timeVal)&&Math.abs(timeVal)>1e-12){
+freqVal=timeVal;
+}
+var srcTxt=(s&&s.title!==undefined&&s.title!==null&&String(s.title).trim().length>0)?String(s.title):((s&&s.id!==undefined&&s.id!==null)?String(s.id):'');
+var mHz=srcTxt.match(/([-+]?\\d+(?:[.,]\\d+)?)\\s*hz/i);
+if(mHz&&mHz[1]){
+var fParsed=parseFloat(String(mHz[1]).replace(',','.'));
+if(isFinite(fParsed))freqVal=fParsed;
+}
+}
+if(VIEWER_MODE==='harmonic'){
+if(isFinite(freqVal)){
+var fTxt=(Math.abs(freqVal-Math.round(freqVal))<1e-9)?String(Math.round(freqVal)):freqVal.toFixed(5).replace(/\.?0+$/,'');
+o.textContent='Inc '+s.increment+' (freq='+fTxt+'Hz)';
+}else{
+o.textContent='Inc '+s.increment+' (freq=n/a)';
+}
+}else{
+o.textContent='Inc '+s.increment+' (t='+timeVal.toFixed(5)+')';
+}
+sel.appendChild(o);
+});
 }
 
 function ovs(){
 const sel=document.getElementById('vs');
 currentVar=sel.value;
-document.getElementById('legend-var-title').textContent=currentVar;
-document.getElementById('cln').textContent=currentVar;
 AD=ensureVarStateCache(currentVar);
 cst=null;rawColors=null;centroidRawColors=null;
 dataMin=0;dataMax=1;curMin=0;curMax=1;
+legendAutoResetPending=true;
+refreshDisplacementComponentUi();
 updateLegendRangeInputs();
 document.getElementById('leg-data-info').textContent='Data range: select an increment';
 document.getElementById('ss').value='';
+updateLegendStateMeta(null);
 // Update centroid info label for new variable
 var loc=VAR_LOCS[currentVar];
 if(centroidMode){
@@ -7240,29 +8387,30 @@ document.getElementById('centroid-info').textContent=loc==='element'?'(linear ex
 }else{
 document.getElementById('centroid-info').textContent=loc==='element'?'(linear extrapolation from IPs)':'(extrapolated nodal values)';
 }
-cn=cloneNodes(ON);cm(getRenderNodes(),null);
+cn=ON.slice();cm(getRenderNodes(),null);
 ulv(0,1);
 updGrad();
 updCb();
-document.getElementById('st').textContent='Output changed to: '+currentVar+' - Select an increment';
+document.getElementById('st').textContent='Output changed to: '+getCurrentVarDisplayName()+' - Select an increment';
 }
 
 function osc(){
 const sel=document.getElementById('ss');
 const sid=sel.value;
 if(!sid){
-cst=null;cn=cloneNodes(ON);cm(getRenderNodes(),null);
+cst=null;cn=ON.slice();cm(getRenderNodes(),null);
+updateLegendStateMeta(null);
 document.getElementById('st').textContent='Undeformed mesh';
 return;}
 const sd=getStateData(currentVar,sid);
 if(!sd){
-cst=null;cn=cloneNodes(ON);cm(getRenderNodes(),null);
+cst=null;cn=ON.slice();cm(getRenderNodes(),null);
+updateLegendStateMeta(null);
 document.getElementById('st').textContent='Increment data not available for '+sid;
 return;
 }
 AD=ensureVarStateCache(currentVar);
 cst=sid;
-applyAutoHarmonicScaleForState(sid);
 asc();
 document.getElementById('st').textContent='Increment '+sd.increment+' loaded';
 }
@@ -7270,28 +8418,6 @@ document.getElementById('st').textContent='Increment '+sd.increment+' loaded';
 function scaleText(v){
 if(!isFinite(v))return '1';
 return String(Number(v.toPrecision(8)));
-}
-function calcHarmonicInitialScaleFromDispMax(maxDisp){
-var md=Math.abs(Number(maxDisp));
-if(!isFinite(md)||md<=0)return (DEFAULT_SCALE_FACTOR>0?DEFAULT_SCALE_FACTOR:1);
-var bs=B;
-if(!isFinite(bs)||bs<=1e-20)bs=1.0;
-var TARGET=0.05;
-var scale=(TARGET*bs)/md;
-if(!isFinite(scale)||scale<=0)scale=(DEFAULT_SCALE_FACTOR>0?DEFAULT_SCALE_FACTOR:1);
-return Math.max(1.0,scale);
-}
-function getHarmonicScaleForState(sid){
-if(!sid)return null;
-var sm=SL_BY_ID[String(sid)];
-if(!sm)return null;
-var scale=calcHarmonicInitialScaleFromDispMax(sm.disp_max);
-return (isFinite(scale)&&scale>0)?scale:null;
-}
-function applyAutoHarmonicScaleForState(sid){
-if(VIEWER_MODE!=='harmonic')return;
-var hs=getHarmonicScaleForState(sid);
-if(isFinite(hs)&&hs>0)setScaleFactorToUI(hs);
 }
 function getScaleFactorFromUI(){
 var sf=document.getElementById('scf');
@@ -7330,26 +8456,20 @@ if(!cst){document.getElementById('st').textContent='Select increment first';retu
 setScaleFactorToUI(getScaleFactorFromUI());
 const sd=AD[cst]||getStateData(currentVar,cst);
 if(!sd){document.getElementById('st').textContent='Increment data unavailable';return;}
-rawColors=sd.colors||null;
-centroidRawColors=sd.centroid_colors||null;
+updateLegendStateMeta({increment:(sd.increment!==undefined?sd.increment:null),time:(sd.time!==undefined?sd.time:null)});
+rawColors=sd.colors?sd.colors.slice():null;
+centroidRawColors=sd.centroid_colors?sd.centroid_colors.slice():null;
 // Update legend range FIRST so cm() uses correct curMin/curMax for centroid mapping
 ucr(sd);
 var drawColors=noContour?null:sd.colors;
 var sdNodes=getStateNodes(cst);
 if(sdNodes){
-if(!cn||cn.length!==ON.length){
 cn=[];
-for(let ci=0;ci<ON.length;ci++)cn.push([0,0,0]);
-}
 for(let i=0;i<ON.length;i++){
-const o=ON[i],u=(sdNodes[i]||[0,0,0]);
-var row=cn[i];
-row[0]=o[0]+u[0]*cs;
-row[1]=o[1]+u[1]*cs;
-row[2]=o[2]+u[2]*cs;
-}
+const o=ON[i],d=(sdNodes[i]||o);
+cn.push([o[0]+(d[0]-o[0])*cs,o[1]+(d[1]-o[1])*cs,o[2]+(d[2]-o[2])*cs]);}
 cm(getRenderNodes(),drawColors);
-document.getElementById('st').textContent='Scale '+scaleText(cs)+'x applied ('+currentVar+(centroidMode?' - Centroid':'')+')';
+document.getElementById('st').textContent='Scale '+scaleText(cs)+'x applied ('+getCurrentVarDisplayName()+(centroidMode?' - Centroid':'')+')';
 }else{cm(ON,drawColors);
 document.getElementById('st').textContent='No displacement data';}
 // Update active measurement for new increment
@@ -7369,8 +8489,9 @@ dataMin=sd.centroid_min;dataMax=sd.centroid_max;
 }else{
 dataMin=sd.color_min;dataMax=sd.color_max;
 }
-if(dynamicLegend){
+if(dynamicLegend||legendAutoResetPending||!isFinite(curMin)||!isFinite(curMax)){
 curMin=dataMin;curMax=dataMax;
+legendAutoResetPending=false;
 if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
 }
 updateLegendRangeInputs();
@@ -7581,14 +8702,20 @@ pauseBtn.innerHTML=(isActive&&animPaused)?'&#9654; Resume':'&#10074;&#10074; Pau
 }
 
 function applyStaticAnimationState(idx){
-if(!animStaticSeq||animStaticSeq.length===0)return false;
+if(!SL||SL.length===0)return false;
 if(!isFinite(idx))return false;
 if(idx<animRangeStart)idx=animRangeStart;
 if(idx>animRangeEnd)idx=animRangeEnd;
-var mappedIdx=animStaticSeq[idx];
-if(mappedIdx===undefined||mappedIdx===null)return false;
-if(!applyStaticAnimationStateByIndex(mappedIdx))return false;
+if(idx<0||idx>=SL.length)return false;
 animIndex=idx;
+var state=SL[animIndex];
+if(!state)return false;
+xyAnimIndex=animIndex;
+var sel=document.getElementById('ss');
+if(sel)sel.value=state.id;
+if(cst!==state.id){osc();}
+else{asc();}
+if(xyPlotVisible)drawPlot();
 return true;
 }
 
@@ -7639,7 +8766,7 @@ animIndex++;
 if(animIndex>animRangeEnd)animIndex=animRangeStart;
 }
 }
-if(!applyStaticAnimationState(animIndex)){stopAnimation();return;}
+applyStaticAnimationState(animIndex);
 },tickMs);
 refreshAnimTransportButtons();
 }
@@ -7713,103 +8840,6 @@ btn.style.background=animSwing?'#00C853':'#D32F2F';
 }
 btn.style.color='#fff';
 updateAnimationModeControls();
-}
-
-function normalizeAnimRangeIndices(startIdx,endIdx){
-var n=SL.length;
-if(n<1)return {valid:false,si:0,ei:0};
-var s=parseInt(startIdx,10);
-var e=parseInt(endIdx,10);
-if(!isFinite(s))s=0;
-if(!isFinite(e))e=n-1;
-if(s<0)s=0;
-if(s>=n)s=n-1;
-if(e<0)e=0;
-if(e>=n)e=n-1;
-var si=Math.min(s,e),ei=Math.max(s,e);
-return {valid:(ei>si),si:si,ei:ei};
-}
-
-function buildStaticStateIndexSequence(startIdx,endIdx,requireData){
-var out=[];
-var rng=normalizeAnimRangeIndices(startIdx,endIdx);
-if(!rng.valid)return out;
-for(var i=rng.si;i<=rng.ei;i++){
-var st=SL[i];
-if(!st)continue;
-if(requireData&&currentVar&&!hasStateData(currentVar,st.id))continue;
-out.push(i);
-}
-if(out.length<2&&requireData){
-out=[];
-for(var j=rng.si;j<=rng.ei;j++){
-if(SL[j])out.push(j);
-}
-}
-return out;
-}
-
-function buildSwingStateIndexSequence(baseSeq){
-if(!baseSeq||baseSeq.length===0)return [];
-if(baseSeq.length===1)return [baseSeq[0]];
-var seq=baseSeq.slice();
-for(var i=baseSeq.length-2;i>=0;i--){
-seq.push(baseSeq[i]);
-}
-return seq;
-}
-
-function applyStaticAnimationStateByIndex(idx){
-if(idx===undefined||idx===null||idx<0||idx>=SL.length)return false;
-var state=SL[idx];
-if(!state||!state.id)return false;
-var sid=state.id;
-if(!hasStateData(currentVar,sid))return false;
-var sd=AD[sid]||getStateData(currentVar,sid);
-if(!sd)return false;
-AD=ensureVarStateCache(currentVar);
-cst=sid;
-rawColors=sd.colors||null;
-centroidRawColors=sd.centroid_colors||null;
-if(dynamicLegend||!harmonicLegendSyncDone){
-ucr(sd);
-harmonicLegendSyncDone=true;
-}
-var drawColors=noContour?null:rawColors;
-if(!centroidMode&&!noContour&&!dynamicLegend&&rawColors&&(Math.abs(curMin-dataMin)>1e-20||Math.abs(curMax-dataMax)>1e-20)){
-drawColors=remapColors(rawColors,dataMin,dataMax,curMin,curMax);
-}
-var sdNodes=getStateNodes(sid);
-if(sdNodes){
-if(!cn||cn.length!==ON.length){
-cn=[];
-for(let ci=0;ci<ON.length;ci++)cn.push([0,0,0]);
-}
-var scaleNow=cs;
-for(let i=0;i<ON.length;i++){
-const o=ON[i],u=(sdNodes[i]||[0,0,0]);
-var row=cn[i];
-row[0]=o[0]+u[0]*scaleNow;
-row[1]=o[1]+u[1]*scaleNow;
-row[2]=o[2]+u[2]*scaleNow;
-}
-cm(getRenderNodes(),drawColors);
-}else{
-cm(ON,drawColors);
-}
-var sel=document.getElementById('ss');
-if(sel)sel.value=sid;
-xyAnimIndex=idx;
-var now=(window&&window.performance&&window.performance.now)?window.performance.now():Date.now();
-var allowUiUpdate=(!harmonicPerfActive)||(now-harmonicPerfLastTableUpdateMs>=120);
-if(allowUiUpdate){
-if(harmonicPerfActive)harmonicPerfLastTableUpdateMs=now;
-if(measMode!=='off'&&measNodes.length>=2)updateMeasurement();
-if(pinnedNodes.length>0||pinnedElems.length>0)updatePinnedValues();
-else if(tableFormVisible)updateTableForm();
-}
-if(xyPlotVisible)drawPlot();
-return true;
 }
 
 function getHarmonicBaseStateId(){
@@ -7890,11 +8920,11 @@ cn=[];
 for(let ci=0;ci<ON.length;ci++)cn.push([0,0,0]);
 }
 for(let i=0;i<ON.length;i++){
-const o=ON[i],u=(sdNodes[i]||[0,0,0]);
+const o=ON[i],d=(sdNodes[i]||o);
 var row=cn[i];
-row[0]=o[0]+u[0]*amp;
-row[1]=o[1]+u[1]*amp;
-row[2]=o[2]+u[2]*amp;
+row[0]=o[0]+(d[0]-o[0])*amp;
+row[1]=o[1]+(d[1]-o[1])*amp;
+row[2]=o[2]+(d[2]-o[2])*amp;
 }
 cm(getRenderNodes(),drawColors);
 if(measMode!=='off'&&measNodes.length>=2)updateMeasurement();
@@ -7951,10 +8981,8 @@ const sdResume=sidResume?(AD[sidResume]||getStateData(currentVar,sidResume)):nul
 setAnimStatus('Playing Harmonic: Inc '+(sdResume?sdResume.increment:sidResume)+' (full cycle)...','#00C853');
 }else if(animMode==='static'){
 startStaticAnimationTimer();
-var seqStartResume=SL[animStaticSeq[animRangeStart]];
-var seqEndResume=SL[animStaticSeq[animRangeEnd]];
-if(seqStartResume&&seqEndResume){
-setAnimStatus(animStaticSwing?('Playing Swing: Inc '+seqStartResume.increment+' <-> '+seqEndResume.increment+'...'):('Playing Inc '+seqStartResume.increment+' to '+seqEndResume.increment+'...'),'#00C853');
+if(SL[animRangeStart]&&SL[animRangeEnd]){
+setAnimStatus(animStaticSwing?('Playing Swing: Inc '+SL[animRangeStart].increment+' <-> '+SL[animRangeEnd].increment+'...'):('Playing Inc '+SL[animRangeStart].increment+' to '+SL[animRangeEnd].increment+'...'),'#00C853');
 }else{
 setAnimStatus('Playing animation...','#00C853');
 }
@@ -8000,37 +9028,25 @@ if(SL.length<2){setAnimStatus('Need 2+ increments','#FF6D00');refreshAnimTranspo
 stopAnimation();
 const startIdx=parseInt(document.getElementById('gif-start').value);
 const endIdx=parseInt(document.getElementById('gif-end').value);
-var rangeInfo=normalizeAnimRangeIndices(startIdx,endIdx);
-if(!rangeInfo.valid){setAnimStatus('Invalid range','#FF6D00');refreshAnimTransportButtons();return;}
-var staticSeq=buildStaticStateIndexSequence(rangeInfo.si,rangeInfo.ei,true);
-if(staticSeq.length<2){setAnimStatus('Need 2+ increments with data','#FF6D00');refreshAnimTransportButtons();return;}
-animStaticSeq=staticSeq;
-animRangeStart=0;
-animRangeEnd=animStaticSeq.length-1;
-animIndex=animRangeStart;
+const si=Math.min(startIdx,endIdx),ei=Math.max(startIdx,endIdx);
+if(ei<=si){setAnimStatus('Invalid range','#FF6D00');refreshAnimTransportButtons();return;}
+animStaticSwing=!!animSwing;
+animRangeStart=si;
+animRangeEnd=ei;
+animIndex=si;
 animDirection=1;
 animMode='static';
 animPaused=false;
-animStaticSwing=!!animSwing;
-setScaleFactorToUI(getScaleFactorFromUI());
-harmonicLegendSyncDone=false;
 beginHarmonicPerformanceMode();
+if(animIndex>animRangeEnd)animIndex=animRangeStart;
 if(!applyStaticAnimationState(animIndex)){
-endHarmonicPerformanceMode();
-animMode='none';
-animPaused=false;
-animStaticSwing=false;
-animStaticSeq=[];
-setAnimStatus('Animation data unavailable','#FF6D00');
+stopAnimation();
+setAnimStatus('Increment data unavailable for animation','#FF6D00');
 refreshAnimTransportButtons();
 return;
 }
 startStaticAnimationTimer();
-var seqStart=SL[animStaticSeq[animRangeStart]];
-var seqEnd=SL[animStaticSeq[animRangeEnd]];
-var startInc=seqStart?seqStart.increment:animRangeStart;
-var endInc=seqEnd?seqEnd.increment:animRangeEnd;
-setAnimStatus(animStaticSwing?('Playing Swing: Inc '+startInc+' <-> '+endInc+'...'):('Playing Inc '+startInc+' to '+endInc+'...'),'#00C853');
+setAnimStatus(animStaticSwing?('Playing Swing: Inc '+SL[si].increment+' <-> '+SL[ei].increment+'...'):('Playing Inc '+SL[si].increment+' to '+SL[ei].increment+'...'),'#00C853');
 refreshAnimTransportButtons();
 }
 
@@ -8054,8 +9070,7 @@ const sid=harmonicBaseStateId||getHarmonicBaseStateId();
 const sd=sid?(AD[sid]||getStateData(currentVar,sid)):null;
 setAnimStatus('Paused Harmonic: Inc '+(sd?sd.increment:sid)+' (full cycle)','#FFB300');
 }else if(animMode==='static'){
-var sIdx=animStaticSeq[animIndex];
-var sCur=(sIdx!==undefined&&sIdx!==null)?SL[sIdx]:null;
+const sCur=SL[animIndex];
 setAnimStatus(sCur?('Paused at Inc '+sCur.increment):'Paused','#FFB300');
 }else{
 setAnimStatus('Paused','#FFB300');
@@ -8071,8 +9086,7 @@ return;
 }
 if(!animPaused)pauseAnimation();
 if(stepStaticAnimation(-1)){
-var sIdx=animStaticSeq[animIndex];
-var cur=(sIdx!==undefined&&sIdx!==null)?SL[sIdx]:null;
+var cur=SL[animIndex];
 setAnimStatus(cur?('Paused at Inc '+cur.increment):'Paused','#FFB300');
 }else{
 setAnimStatus('Cannot move to previous increment','#FF6D00');
@@ -8088,8 +9102,7 @@ return;
 }
 if(!animPaused)pauseAnimation();
 if(stepStaticAnimation(1)){
-var sIdx=animStaticSeq[animIndex];
-var cur=(sIdx!==undefined&&sIdx!==null)?SL[sIdx]:null;
+var cur=SL[animIndex];
 setAnimStatus(cur?('Paused at Inc '+cur.increment):'Paused','#FFB300');
 }else{
 setAnimStatus('Cannot move to next increment','#FF6D00');
@@ -8107,8 +9120,6 @@ animStepAccum=0;
 animDirection=1;
 animRangeStart=0;
 animRangeEnd=0;
-animIndex=0;
-animStaticSeq=[];
 if((VIEWER_MODE==='harmonic'||animHarmonic)&&harmonicBaseStateId)restoreHarmonicBaseState();
 endHarmonicPerformanceMode();
 harmonicLegendSyncDone=false;
@@ -8138,8 +9149,8 @@ var p1=cn[n1],p2=cn[n2];
 var dx=p2[0]-p1[0],dy=p2[1]-p1[1],dz=p2[2]-p1[2];
 var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
 lines=['Distance Measurement','Node A: '+n1+'  Node B: '+n2,
-'\u0394X = '+dx.toExponential(4),'\u0394Y = '+dy.toExponential(4),
-'\u0394Z = '+dz.toExponential(4),'Magnitude = '+mag.toExponential(4)];
+'\u0394X = '+formatLegendDrivenValue(dx,'N/A'),'\u0394Y = '+formatLegendDrivenValue(dy,'N/A'),
+'\u0394Z = '+formatLegendDrivenValue(dz,'N/A'),'Magnitude = '+formatLegendDrivenValue(mag,'N/A')];
 }else if(measMode==='angle'){
 var n1=measNodes[0],n2=measNodes[1],n3=measNodes[2];
 var p1=cn[n1],p2=cn[n2],p3=cn[n3];
@@ -8152,7 +9163,7 @@ var cosA=(m1>1e-20&&m2>1e-20)?dot/(m1*m2):0;
 cosA=Math.max(-1,Math.min(1,cosA));
 var angleDeg=Math.acos(cosA)*180/Math.PI;
 lines=['Angle Measurement','Nodes: '+n1+' - '+n2+' - '+n3,
-'Angle at '+n2+' = '+angleDeg.toFixed(2)+'\u00B0'];
+'Angle at '+n2+' = '+formatLegendDrivenValue(angleDeg,'N/A')+'\u00B0'];
 }
 var lineH=14,pad=8;
 var boxH=lines.length*lineH+pad*2;
@@ -8676,7 +9687,6 @@ return;
 }
 var si=0,ei=0;
 var harmonicIncLabel='';
-var staticBaseSeq=null;
 if(useHarmonic){
 var harmonicSid=getHarmonicBaseStateId();
 if(!harmonicSid){alert('Select one increment before exporting Harmonic GIF');return;}
@@ -8691,24 +9701,22 @@ harmonicIncLabel=(hsd.increment!==undefined&&hsd.increment!==null)?String(hsd.in
 }else{
 const startIdx=parseInt(document.getElementById('gif-start').value);
 const endIdx=parseInt(document.getElementById('gif-end').value);
-var rangeInfo=normalizeAnimRangeIndices(startIdx,endIdx);
-if(!rangeInfo.valid){alert('Select a valid increment range (start must differ from end)');return;}
-si=rangeInfo.si;
-ei=rangeInfo.ei;
-staticBaseSeq=buildStaticStateIndexSequence(si,ei,true);
-if(staticBaseSeq.length<2){alert('Need at least 2 increments with data in selected range');return;}
+si=Math.min(startIdx,endIdx);
+ei=Math.max(startIdx,endIdx);
+if(ei<=si){alert('Select a valid increment range (start must differ from end)');return;}
 }
 var swingBtnEl=document.getElementById('anim-harmonic-btn');
 var swingBtnOn=!!(swingBtnEl&&String(swingBtnEl.textContent||'').trim().toLowerCase()==='on');
 var staticSwingGif=(!useHarmonic)&&(!!animSwing||swingBtnOn);
 var staticFrameSeq=null;
-if(!useHarmonic){
-if(staticSwingGif)staticFrameSeq=buildSwingStateIndexSequence(staticBaseSeq);
-else staticFrameSeq=staticBaseSeq.slice();
+if(staticSwingGif){
+staticFrameSeq=[];
+for(var sfi=si;sfi<=ei;sfi++)staticFrameSeq.push(sfi);
+for(var sbi=ei-1;sbi>=si;sbi--)staticFrameSeq.push(sbi);
 }
-var totalCaptureFrames=useHarmonic?(ei-si+1):((staticFrameSeq&&staticFrameSeq.length)?staticFrameSeq.length:0);
-if(!useHarmonic&&totalCaptureFrames<2){alert('Need at least 2 increments with data');return;}
+var totalCaptureFrames=useHarmonic?(ei-si+1):(staticSwingGif?staticFrameSeq.length:(ei-si+1));
 stopAnimation();
+var gifRotationCutState=hideRotationCutVisualsForCapture();
 const speed=parseInt(document.getElementById('anim-speed').value);
 const frameDelay=Math.max(80,600/speed);
 var prevXYAnim=xyAnimIndex;
@@ -8742,15 +9750,9 @@ if(useHarmonic){
 document.getElementById('anim-status').textContent='Capturing harmonic cycle for Inc '+harmonicIncLabel+' ('+totalCaptureFrames+' frames) at '+gifScale+'x...';
 }else{
 if(staticSwingGif){
-var sFirst=SL[staticBaseSeq[0]],sLast=SL[staticBaseSeq[staticBaseSeq.length-1]];
-var sFirstInc=sFirst?sFirst.increment:staticBaseSeq[0];
-var sLastInc=sLast?sLast.increment:staticBaseSeq[staticBaseSeq.length-1];
-document.getElementById('anim-status').textContent='Capturing swing frames Inc '+sFirstInc+' <-> '+sLastInc+' ('+totalCaptureFrames+' frames) at '+gifScale+'x...';
+document.getElementById('anim-status').textContent='Capturing swing frames '+(si+1)+' <-> '+(ei+1)+' ('+totalCaptureFrames+' frames) at '+gifScale+'x...';
 }else{
-var fFirst=SL[staticBaseSeq[0]],fLast=SL[staticBaseSeq[staticBaseSeq.length-1]];
-var fFirstInc=fFirst?fFirst.increment:staticBaseSeq[0];
-var fLastInc=fLast?fLast.increment:staticBaseSeq[staticBaseSeq.length-1];
-document.getElementById('anim-status').textContent='Capturing frames Inc '+fFirstInc+' to '+fLastInc+' at '+gifScale+'x...';
+document.getElementById('anim-status').textContent='Capturing frames '+(si+1)+' to '+(ei+1)+' at '+gifScale+'x...';
 }
 }
 }
@@ -8759,6 +9761,7 @@ var restoredExportView=false;
 function restoreExportView(){
 if(restoredExportView)return;
 restoredExportView=true;
+restoreRotationCutVisualsAfterCapture(gifRotationCutState);
 try{
 re.setPixelRatio(basePixelRatio);
 re.setSize(baseCssW,baseCssH,false);
@@ -8985,12 +9988,7 @@ xyAnimIndex=-1;
 if(xyPlotVisible&&capIndex===0)drawPlot();
 document.getElementById('anim-status').textContent='Harmonic frame '+(capIndex+1)+'/'+totalCaptureFrames+'...';
 }else{
-var stateIdx=staticFrameSeq[capIndex];
-if(stateIdx===undefined||stateIdx===null||stateIdx<0||stateIdx>=SL.length){
-restoreExportView();
-document.getElementById('anim-status').textContent='GIF export error: invalid state index';
-return;
-}
+var stateIdx=staticSwingGif?staticFrameSeq[capIndex]:(si+capIndex);
 var state=SL[stateIdx];
 document.getElementById('ss').value=state.id;osc();
 xyAnimIndex=stateIdx;
@@ -9057,18 +10055,7 @@ try{gif.render();}catch(err){document.getElementById('anim-status').textContent=
 cap();
 }
 
-function rsc(){
-if(VIEWER_MODE==='harmonic'&&cst){
-var hs=getHarmonicScaleForState(cst);
-if(isFinite(hs)&&hs>0){
-setScaleFactorToUI(hs);
-asc();
-return;
-}
-}
-setScaleFactorToUI(DEFAULT_SCALE_FACTOR);
-asc();
-}
+function rsc(){setScaleFactorToUI(DEFAULT_SCALE_FACTOR);asc();}
 function syncAllEdgesOptionAvailability(){
 var edSel=document.getElementById('ed');
 if(!edSel)return;
@@ -9189,6 +10176,31 @@ const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),Math.PI
 camQuat.premultiply(q);camQuat.normalize();uc();
 }
 
+function hideRotationCutVisualsForCapture(){
+var state={
+line:!!(rotationCutLine&&rotationCutLine.visible),
+plane:!!(rotationCutPlaneMesh&&rotationCutPlaneMesh.visible),
+edges:!!(rotationCutPlaneEdges&&rotationCutPlaneEdges.visible),
+plane2:!!(rotationCutPlaneMesh2&&rotationCutPlaneMesh2.visible),
+edges2:!!(rotationCutPlaneEdges2&&rotationCutPlaneEdges2.visible)
+};
+if(rotationCutLine)rotationCutLine.visible=false;
+if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=false;
+if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=false;
+if(rotationCutPlaneMesh2)rotationCutPlaneMesh2.visible=false;
+if(rotationCutPlaneEdges2)rotationCutPlaneEdges2.visible=false;
+return state;
+}
+
+function restoreRotationCutVisualsAfterCapture(state){
+if(!state)return;
+if(rotationCutLine)rotationCutLine.visible=!!state.line;
+if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=!!state.plane;
+if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=!!state.edges;
+if(rotationCutPlaneMesh2)rotationCutPlaneMesh2.visible=!!state.plane2;
+if(rotationCutPlaneEdges2)rotationCutPlaneEdges2.visible=!!state.edges2;
+}
+
 function drawScreenshotLegend(ctx,w,h){
 if(noContour)return;
 ctx.save();
@@ -9267,7 +10279,9 @@ overlay.appendChild(box);document.body.appendChild(overlay);
 }
 function scsCapture(includeXY){
 var scsWatermarkSprite=null;
+var scsRotationCutState=null;
 try{
+scsRotationCutState=hideRotationCutVisualsForCapture();
 scsWatermarkSprite=createGifWatermarkSprite();
 if(scsWatermarkSprite)updateGifWatermarkSprite(scsWatermarkSprite,0.6);
 renderFrameWhite();
@@ -9345,6 +10359,7 @@ setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},30
 }catch(ex){
 alert('Screenshot error: '+ex.message);
 }finally{
+restoreRotationCutVisualsAfterCapture(scsRotationCutState);
 if(scsWatermarkSprite)disposeGifWatermarkSprite(scsWatermarkSprite);
 }
 }
@@ -9658,6 +10673,21 @@ xyRefreshAnimInfoButton();
 drawPlot();
 }
 
+function xyGetInfoBoxFontSpec(){
+var titlePx=Math.max(8,Math.min(24,xyTitleFontSize||10));
+var bodyPx=Math.max(7,Math.min(20,xyValuesFontSize||9));
+var pad=Math.max(6,Math.round(bodyPx*0.7));
+var titleLineH=Math.max(12,Math.round(titlePx*1.2));
+var bodyLineH=Math.max(12,Math.round(bodyPx*1.25));
+return {
+titleFont:'bold '+titlePx+'px Arial',
+bodyFont:bodyPx+'px Arial',
+pad:pad,
+titleLineH:titleLineH,
+bodyLineH:bodyLineH
+};
+}
+
 function xyDrawAnimHighlightInfo(ctx,ml,mt,pw,ph,items,occupied){
 if(!occupied)occupied=[];
 if(!xyAnimInfoVisible||xyAnimIndex<0||!items||items.length===0)return;
@@ -9675,16 +10705,17 @@ var p=it.point;
 var cCol=c.color||CURVE_COLORS[ii%CURVE_COLORS.length];
 var ylbl=(c.axis==='secondary')?ylblR:ylblL;
 var lines=['Pin: '+c.name+(c.axis==='secondary'?' (R)':''),xlbl+': '+xyFmt(p[0]),ylbl+': '+xyFmt(p[1])];
+var fontSpec=xyGetInfoBoxFontSpec();
 ctx.save();
-var pad=6,lineH=12;
-ctx.font='bold 10px Arial';
+var pad=fontSpec.pad;
+ctx.font=fontSpec.titleFont;
 var maxW=ctx.measureText(lines[0]).width;
-ctx.font='10px Arial';
+ctx.font=fontSpec.bodyFont;
 for(var li=1;li<lines.length;li++){
 var w=ctx.measureText(lines[li]).width;
 if(w>maxW)maxW=w;
 }
-var boxW=maxW+pad*2,boxH=lines.length*lineH+pad*2;
+var boxW=maxW+pad*2,boxH=pad*2+fontSpec.titleLineH+Math.max(0,lines.length-1)*fontSpec.bodyLineH;
 var place=xyPlaceInfoBox(it.x,it.y,boxW,boxH,ml,mt,pw,ph,occupied);
 occupied.push(place);
 xyDrawInfoConnector(ctx,it.x,it.y,place,xyHexToRgba(cCol,0.9));
@@ -9695,11 +10726,11 @@ roundRectPath(ctx,place.x,place.y,boxW,boxH,4);
 ctx.fillStyle='#5D4037';
 ctx.textAlign='left';
 ctx.textBaseline='top';
-ctx.font='bold 10px Arial';
+ctx.font=fontSpec.titleFont;
 ctx.fillText(lines[0],place.x+pad,place.y+pad);
-ctx.font='10px Arial';
+ctx.font=fontSpec.bodyFont;
 for(var li=1;li<lines.length;li++){
-ctx.fillText(lines[li],place.x+pad,place.y+pad+li*lineH);
+ctx.fillText(lines[li],place.x+pad,place.y+pad+fontSpec.titleLineH+(li-1)*fontSpec.bodyLineH);
 }
 ctx.restore();
 }
@@ -9745,13 +10776,26 @@ if(d<bestDist){bestDist=d;bestPt=p;bestCurve=c;bestCol=col;}
 if(bestPt&&bestCurve){
 var xn=document.getElementById('xy-xname');
 var yn=document.getElementById('xy-yname');
+var syn=document.getElementById('xy-syname');
 var xlbl=xn?xn.value||'X':'X';
-var ylbl=yn?yn.value||'Y':'Y';
-tt.innerHTML='<b>'+bestCurve.name+'</b>'+(bestCurve.axis==='secondary'?' (R)':'')+'<br>'+xlbl+': '+xyFmt(bestPt[0])+'<br>'+ylbl+': '+xyFmt(bestPt[1]);
+var ylbl=(bestCurve.axis==='secondary')?(syn?syn.value||'Y (R)':'Y (R)'):(yn?yn.value||'Y':'Y');
+var fontSpec=xyGetInfoBoxFontSpec();
+var titlePx=Math.max(8,Math.min(24,xyTitleFontSize||10));
+var bodyPx=Math.max(7,Math.min(20,xyValuesFontSize||9));
+var gap=Math.max(2,Math.round(bodyPx*0.2));
+tt.style.padding=fontSpec.pad+'px';
+tt.style.fontSize=bodyPx+'px';
+tt.style.lineHeight=fontSpec.bodyLineH+'px';
+tt.style.borderRadius=Math.max(4,Math.round(bodyPx*0.45))+'px';
+tt.innerHTML='<div style="font-size:'+titlePx+'px;line-height:'+fontSpec.titleLineH+'px;font-weight:700;margin-bottom:'+gap+'px"><b>'+bestCurve.name+'</b>'+(bestCurve.axis==='secondary'?' (R)':'')+'</div><div>'+xlbl+': '+xyFmt(bestPt[0])+'</div><div>'+ylbl+': '+xyFmt(bestPt[1])+'</div>';
 tt.style.background=bestCol;
 tt.style.display='block';
 var tx=e.clientX-rect.left+12,ty=e.clientY-rect.top-10;
-if(tx+130>rect.width)tx=e.clientX-rect.left-140;
+var tw=tt.offsetWidth||130;
+var th=tt.offsetHeight||40;
+if(tx+tw>rect.width-4)tx=Math.max(4,e.clientX-rect.left-tw-12);
+if(ty+th>rect.height-4)ty=Math.max(4,rect.height-th-4);
+if(ty<4)ty=Math.min(rect.height-th-4,e.clientY-rect.top+12);
 tt.style.left=tx+'px';tt.style.top=ty+'px';
 }else{tt.style.display='none';}
 }
@@ -9888,9 +10932,11 @@ ctx.lineWidth=1;
 ctx.beginPath();ctx.moveTo(px,mt);ctx.lineTo(px,mt+ph);ctx.stroke();
 ctx.beginPath();ctx.moveTo(ml,py);ctx.lineTo(ml+pw,py);ctx.stroke();
 ctx.setLineDash([]);
-ctx.beginPath();ctx.arc(px,py,4.5,0,Math.PI*2);
-ctx.fillStyle='#fff';ctx.fill();
-ctx.strokeStyle=col;ctx.lineWidth=2;ctx.stroke();
+ctx.beginPath();ctx.arc(px,py,6.2,0,Math.PI*2);
+ctx.strokeStyle=xyHexToRgba(col,0.35);ctx.lineWidth=4;ctx.stroke();
+ctx.beginPath();ctx.arc(px,py,4.6,0,Math.PI*2);
+ctx.fillStyle=col;ctx.fill();
+ctx.strokeStyle='#fff';ctx.lineWidth=1.6;ctx.stroke();
 ctx.restore();
 var xn=document.getElementById('xy-xname');
 var yn=document.getElementById('xy-yname');
@@ -9899,16 +10945,17 @@ var xlbl=xn?xn.value||'X':'X';
 var ylbl=(c.axis==='secondary')?(syn?syn.value||'Y (R)':'Y (R)'):(yn?yn.value||'Y':'Y');
 var title=c.name+(c.axis==='secondary'?' (R)':'');
 var lines=[title,xlbl+': '+xyFmt(x),ylbl+': '+xyFmt(y)];
+var fontSpec=xyGetInfoBoxFontSpec();
 ctx.save();
-var pad=6,lineH=12;
-ctx.font='bold 10px Arial';
+var pad=fontSpec.pad;
+ctx.font=fontSpec.titleFont;
 var maxW=ctx.measureText(lines[0]).width;
-ctx.font='10px Arial';
+ctx.font=fontSpec.bodyFont;
 for(var li=1;li<lines.length;li++){
 var w=ctx.measureText(lines[li]).width;
 if(w>maxW)maxW=w;
 }
-var boxW=maxW+pad*2,boxH=lines.length*lineH+pad*2;
+var boxW=maxW+pad*2,boxH=pad*2+fontSpec.titleLineH+Math.max(0,lines.length-1)*fontSpec.bodyLineH;
 var place=xyPlaceInfoBox(px,py,boxW,boxH,ml,mt,pw,ph,occupied);
 occupied.push(place);
 xyDrawInfoConnector(ctx,px,py,place,xyHexToRgba(col,0.85));
@@ -9916,9 +10963,9 @@ ctx.fillStyle='rgba(255,255,255,0.75)';
 ctx.strokeStyle=xyHexToRgba(col,0.6);ctx.lineWidth=1;
 roundRectPath(ctx,place.x,place.y,boxW,boxH,4);
 ctx.fillStyle='#333';ctx.textAlign='left';ctx.textBaseline='top';
-ctx.font='bold 10px Arial';ctx.fillText(lines[0],place.x+pad,place.y+pad);
-ctx.font='10px Arial';
-for(var li=1;li<lines.length;li++){ctx.fillText(lines[li],place.x+pad,place.y+pad+li*lineH);}
+ctx.font=fontSpec.titleFont;ctx.fillText(lines[0],place.x+pad,place.y+pad);
+ctx.font=fontSpec.bodyFont;
+for(var li=1;li<lines.length;li++){ctx.fillText(lines[li],place.x+pad,place.y+pad+fontSpec.titleLineH+(li-1)*fontSpec.bodyLineH);}
 ctx.restore();
 }
 }
@@ -10184,7 +11231,8 @@ if(nonEmptyRows===0||(!ampData.length&&!stiffData.length&&!phaseData.length)){
 alert('Harmonic CSV import failed: no valid numeric rows found in columns A..F.');
 return;
 }
-xyApplyHarmonicCurves(xHeader,ampHeader,ampData,stiffData,phaseData,'Harmonic CSV imported');
+xyApplyHarmonicCurves(xHeader,ampHeader,ampData,stiffData,phaseData);
+document.getElementById('st').textContent='Harmonic CSV imported';
 return;
 }
 var headers=[];
@@ -10251,7 +11299,7 @@ phase=phase-180;
 return xyRoundCalc5(phase);
 }
 
-function xyApplyHarmonicCurves(xHeader,ampHeader,ampData,stiffData,phaseData,statusPrefix){
+function xyApplyHarmonicCurves(xHeader,ampHeader,ampData,stiffData,phaseData){
 if(!ampData.length&&!stiffData.length&&!phaseData.length)return false;
 var stiffnessLabel='Stiffness';
 var phaseLabel='Phase Angle';
@@ -10294,7 +11342,7 @@ if(syStepEl)syStepEl.value='20';
 xySecUserRange={ymin:'-180',ymax:'180'};
 xySecAppliedRange={ymin:'-180',ymax:'180'};
 xyValueFormat='float';
-xyFloatLevels=5;
+xyFloatLevels=2;
 xyUpdateFontControls();
 xyRenderSheetTabs();
 xyEditingIdx=-1;
@@ -10302,8 +11350,7 @@ xySelectedIdx=(xyCurves.length>0)?0:-1;
 xyRefreshList();
 xyUpdatePlotSize();
 drawPlot();
-var prefix=statusPrefix||'Harmonic import';
-document.getElementById('st').textContent=prefix+': Sheet 1 ('+s1.curves.length+' curve(s)), Sheet 2 ('+s2.curves.length+' curve(s)).';
+document.getElementById('st').textContent='Harmonic Excel imported: Sheet 1 ('+s1.curves.length+' curve(s)), Sheet 2 ('+s2.curves.length+' curve(s)).';
 return true;
 }
 
@@ -10318,11 +11365,6 @@ if(range.e.c<5){
 if(forced)alert('Harmonic mode requires at least 6 columns (A..F).');
 return false;
 }
-if(!forced&&range.e.c>5){
-for(var ec=6;ec<=range.e.c;ec++){
-if(xyCellTextOrEmpty(ws,0,ec)!=='')return false;
-}
-}
 
 var headers=[];
 for(var hc=0;hc<=5;hc++)headers.push(xyCellTextOrEmpty(ws,0,hc));
@@ -10331,9 +11373,9 @@ for(var hi=0;hi<headers.length;hi++){
 if(!headers[hi])return false;
 }
 }
-var xHeader=(headers[0]&&headers[0]!=='')?headers[0]:'Frequency (Hz)';
-var ampHeader=(headers[1]&&headers[1]!=='')?headers[1]:'Displacement Magnitude';
 
+var xHeader=headers[0]||'Frequency (Hz)';
+var ampHeader=headers[1]||'Displacement Magnitude';
 var ampData=[],stiffData=[],phaseData=[];
 var nonEmptyRows=0;
 var EPS=1e-20;
@@ -10343,11 +11385,10 @@ var b=xyCellNumberOrNull(ws,ri,1);
 var c=xyCellNumberOrNull(ws,ri,2);
 var d=xyCellNumberOrNull(ws,ri,3);
 var e=xyCellNumberOrNull(ws,ri,4);
-var f=xyCellNumberOrNull(ws,ri,5); // Not used directly, but kept for format validation
+var f=xyCellNumberOrNull(ws,ri,5); // kept for row-validity check
 var hasAny=(a!==null||b!==null||c!==null||d!==null||e!==null||f!==null);
 if(!hasAny)continue;
 nonEmptyRows++;
-
 if(a!==null&&b!==null)ampData.push([a,b]);
 if(a!==null&&b!==null&&c!==null&&Math.abs(b)>EPS){
 var stiffVal=xyRoundCalc5(c/b);
@@ -10358,12 +11399,11 @@ var phase=xyComputeHarmonicPhaseDeg(b,c,d,e);
 if(phase!==null)phaseData.push([a,phase]);
 }
 }
-
 if(nonEmptyRows===0||(!ampData.length&&!stiffData.length&&!phaseData.length)){
 if(forced)alert('Harmonic import failed: no valid numeric rows found in columns A..F.');
 return false;
 }
-return xyApplyHarmonicCurves(xHeader,ampHeader,ampData,stiffData,phaseData,'Harmonic Excel imported');
+return xyApplyHarmonicCurves(xHeader,ampHeader,ampData,stiffData,phaseData);
 }
 
 function xyProcessWorkbook(wb,mode){
@@ -10416,9 +11456,7 @@ var xl=(headers[ci]&&headers[ci]!=='')?headers[ci]:'X';
 var yl=(headers[ci+1]&&headers[ci+1]!=='')?headers[ci+1]:'Y';
 if(firstCurve){firstXLabel=xl;firstYLabel=yl;}
 if(firstCurve&&xyEditingIdx>=0&&xyEditingIdx<xyCurves.length){
-xyCurves[xyEditingIdx].data=data;xyCurves[xyEditingIdx].axis='primary';
-xyCurves[xyEditingIdx].xlabel=xl;xyCurves[xyEditingIdx].ylabel=yl;
-if(yl)xyCurves[xyEditingIdx].name=yl;
+xyAppendOrReplaceEditingCurveData(data,'primary',xl,yl);
 firstCurve=false;
 }else{
 var idx=xyCurves.length;
@@ -10441,9 +11479,7 @@ var yl2=(headers[ci+2]&&headers[ci+2]!=='')?headers[ci+2]:'Y2';
 if(firstCurve){firstXLabel=xl;firstYLabel=yl1;firstSYLabel=yl2;}
 if(d1.length>0){
 if(firstCurve&&xyEditingIdx>=0&&xyEditingIdx<xyCurves.length){
-xyCurves[xyEditingIdx].data=d1;xyCurves[xyEditingIdx].axis='primary';
-xyCurves[xyEditingIdx].xlabel=xl;xyCurves[xyEditingIdx].ylabel=yl1;
-if(yl1)xyCurves[xyEditingIdx].name=yl1;
+xyAppendOrReplaceEditingCurveData(d1,'primary',xl,yl1);
 firstCurve=false;
 }else{
 var idx=xyCurves.length;
@@ -10494,19 +11530,6 @@ if(uxm!=='auto'&&!isNaN(parseFloat(uxm)))r.xmax=parseFloat(uxm);
 if(uy!=='auto'&&!isNaN(parseFloat(uy)))r.ymin=parseFloat(uy);
 if(uym!=='auto'&&!isNaN(parseFloat(uym)))r.ymax=parseFloat(uym);
 return r;
-}
-
-function xyEnforcePhaseAngleSecondary(curves){
-if(!Array.isArray(curves))return;
-for(var i=0;i<curves.length;i++){
-var c=curves[i];
-if(!c||typeof c!=='object')continue;
-var nm=(c.name===undefined||c.name===null)?'':String(c.name).trim().toLowerCase();
-if(nm==='freqxphaseangle'){
-c.axis='secondary';
-if(c.ylabel===undefined||c.ylabel===null||String(c.ylabel).trim()==='')c.ylabel='Phase Angle';
-}
-}
 }
 
 function xyBuildTicks(mn,mx,stepStr){
@@ -10684,6 +11707,19 @@ function mapYs(v){return secR?mt+(secR.ymax-v)/(secR.ymax-secR.ymin)*ph:0;}
 ctx.strokeStyle='#eee';ctx.lineWidth=1;
 for(var gi=0;gi<xTicks.length;gi++){var gx=mapXp(xTicks[gi]);ctx.beginPath();ctx.moveTo(gx,mt);ctx.lineTo(gx,mt+ph);ctx.stroke();}
 for(var gi=0;gi<yTicks.length;gi++){var gy=mapYp(yTicks[gi]);ctx.beginPath();ctx.moveTo(ml,gy);ctx.lineTo(ml+pw,gy);ctx.stroke();}
+if(hasSec&&secR){
+ctx.save();
+ctx.strokeStyle='rgba(244,67,54,0.22)';
+ctx.lineWidth=0.8;
+for(var gi=0;gi<secYTicks.length;gi++){
+var gsy=mapYs(secYTicks[gi]);
+ctx.beginPath();
+ctx.moveTo(ml,gsy);
+ctx.lineTo(ml+pw,gsy);
+ctx.stroke();
+}
+ctx.restore();
+}
 ctx.strokeStyle='#333';ctx.lineWidth=1.5;
 ctx.strokeRect(ml,mt,pw,ph);
 var oriCb=document.getElementById('xy-origin');
@@ -10866,6 +11902,698 @@ if(d===null||!isFinite(d))return null;
 out[i]=[x,d];
 }
 return out;
+}
+
+function xyEscapeHtml(text){
+var s=(text===undefined||text===null)?'':String(text);
+return s.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;');
+}
+
+function xyForecastFormatNumber(v){
+if(v===undefined||v===null||!isFinite(v))return String(v);
+if(v===0)return '0';
+var av=Math.abs(v);
+if(av>=1e4||av<1e-4)return Number(v).toExponential(6);
+var s=Number(v).toFixed(6);
+while(s.indexOf('.')>=0&&(s.charAt(s.length-1)==='0'||s.charAt(s.length-1)==='.')){
+if(s.charAt(s.length-1)==='.'){s=s.slice(0,-1);break;}
+s=s.slice(0,-1);
+}
+if(s==='-0')s='0';
+return s;
+}
+
+function getForecastDialogFormat(box){
+return (box&&box.forecastDialogFormat==='exp')?'exp':'float';
+}
+
+function formatForecastDialogValue(v,format,decimals){
+if(v===undefined||v===null||!isFinite(v))return String(v);
+var d=parseInt(decimals,10);
+if(!isFinite(d))d=6;
+d=Math.max(0,Math.min(10,d));
+if((format==='exp')||String(format).toLowerCase()==='exponential'){
+return Number(v).toExponential(d);
+}
+var s=Number(v).toFixed(d);
+if(Number(s)===0)return d>0?('0.'+'0'.repeat(d)):'0';
+return s;
+}
+
+function xyForecastParseValue(raw){
+var txt=(raw===undefined||raw===null)?'':String(raw).trim();
+if(!txt)return null;
+txt=txt.split(',').join('.');
+var v=Number(txt);
+return isFinite(v)?v:null;
+}
+
+function xyNormalizeForecastData(srcData){
+if(!srcData||srcData.length===0)return null;
+var pts=[];
+for(var i=0;i<srcData.length;i++){
+var p=srcData[i];
+if(!p||p.length<2)continue;
+var x=Number(p[0]),y=Number(p[1]);
+if(!isFinite(x)||!isFinite(y))continue;
+pts.push([x,y]);
+}
+return pts.length>=2?pts:null;
+}
+
+function xyForecastSafeColor(color,fallback){
+var c=(color===undefined||color===null)?'':String(color).trim();
+if(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c))return c;
+if(/^rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/.test(c))return c;
+return fallback||'#8E24AA';
+}
+
+function xyForecastColorToRgb(color){
+var c=xyForecastSafeColor(color,'');
+var m3=c.match(/^#([0-9a-fA-F]{3})$/);
+if(m3){
+return {
+r:parseInt(m3[1].charAt(0)+m3[1].charAt(0),16),
+g:parseInt(m3[1].charAt(1)+m3[1].charAt(1),16),
+b:parseInt(m3[1].charAt(2)+m3[1].charAt(2),16)
+};
+}
+var m6=c.match(/^#([0-9a-fA-F]{6})$/);
+if(m6){
+return {
+r:parseInt(m6[1].slice(0,2),16),
+g:parseInt(m6[1].slice(2,4),16),
+b:parseInt(m6[1].slice(4,6),16)
+};
+}
+var mrgb=c.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+if(mrgb){
+return {
+r:Math.max(0,Math.min(255,parseInt(mrgb[1],10))),
+g:Math.max(0,Math.min(255,parseInt(mrgb[2],10))),
+b:Math.max(0,Math.min(255,parseInt(mrgb[3],10)))
+};
+}
+return null;
+}
+
+function xyForecastTextColorForBg(color){
+var rgb=xyForecastColorToRgb(color);
+if(!rgb)return '#fff';
+var lum=(0.299*rgb.r+0.587*rgb.g+0.114*rgb.b)/255;
+return lum>0.65?'#111':'#fff';
+}
+
+function xyForecastGetCurveColor(curve,idx){
+return xyForecastSafeColor(curve&&curve.color?curve.color:CURVE_COLORS[idx%CURVE_COLORS.length],'#8E24AA');
+}
+
+function xyForecastModeLabel(mode){
+if(mode==='extrapolate-high')return 'Multipole extrapolation (high end)';
+if(mode==='extrapolate-low')return 'Multipole extrapolation (low end)';
+return 'Multipole interpolation';
+}
+
+function xyForecastBuildSignal(data,sourceAxisKey){
+if(!data||data.length<2)return null;
+var srcPos=(sourceAxisKey==='y')?1:0;
+var dstPos=(srcPos===0)?1:0;
+var signal=[],maxi=-Infinity,mini=Infinity;
+for(var i=0;i<data.length;i++){
+var p=data[i];
+if(!p||p.length<2)continue;
+var x=Number(p[0]),y=Number(p[1]),src=Number(p[srcPos]),dst=Number(p[dstPos]);
+if(!isFinite(x)||!isFinite(y)||!isFinite(src)||!isFinite(dst))continue;
+signal.push({x:x,y:y,source:src,target:dst});
+if(src>maxi)maxi=src;
+if(src<mini)mini=src;
+}
+if(signal.length<2||!isFinite(maxi)||!isFinite(mini))return null;
+return {signal:signal,count:signal.length,maxi:maxi,mini:mini,increasing:(signal[signal.length-1].source>signal[0].source)};
+}
+
+function xyForecastFindFallbackSegment(signal,forecastSourceValue){
+var best=-1,bestDiff=Infinity;
+for(var i=0;i<signal.length-1;i++){
+var a=signal[i],b=signal[i+1];
+if(Math.abs(b.source-a.source)<1e-30)continue;
+var diff=Math.min(Math.abs(forecastSourceValue-a.source),Math.abs(forecastSourceValue-b.source));
+if(diff<bestDiff){best=i;bestDiff=diff;}
+}
+return best;
+}
+
+function xyForecastMultipole(data,sourceAxisKey,forecastSourceValue){
+var pack=xyForecastBuildSignal(data,sourceAxisKey);
+if(!pack)return null;
+var signal=pack.signal,n=signal.length,idx=-1,mode='interpolate';
+if(forecastSourceValue>=pack.maxi&&pack.increasing){
+idx=n-2;mode='extrapolate-high';
+}else if(forecastSourceValue>=pack.maxi&&!pack.increasing){
+idx=0;mode='extrapolate-high';
+}else if(forecastSourceValue<=pack.mini&&pack.increasing){
+idx=0;mode='extrapolate-low';
+}else if(forecastSourceValue<=pack.mini&&!pack.increasing){
+idx=n-2;mode='extrapolate-low';
+}else{
+for(var i=0;i<n-1;i++){
+var s0=signal[i].source,s1=signal[i+1].source;
+if((forecastSourceValue>s0&&forecastSourceValue<=s1)||(forecastSourceValue<s0&&forecastSourceValue>=s1)){
+idx=i;
+break;
+}
+}
+if(idx<0)idx=xyForecastFindFallbackSegment(signal,forecastSourceValue);
+}
+if(idx<0||idx>=n-1)return null;
+var a=signal[idx],b=signal[idx+1];
+if(Math.abs(b.source-a.source)<1e-30){
+idx=xyForecastFindFallbackSegment(signal,forecastSourceValue);
+if(idx<0||idx>=n-1)return null;
+a=signal[idx];b=signal[idx+1];
+if(Math.abs(b.source-a.source)<1e-30)return null;
+}
+var targetValue=a.target+(forecastSourceValue-a.source)*(b.target-a.target)/(b.source-a.source);
+if(!isFinite(targetValue))return null;
+return {
+count:pack.count,
+mode:mode,
+methodLabel:xyForecastModeLabel(mode),
+segment:{a:{x:a.x,y:a.y,source:a.source,target:a.target},b:{x:b.x,y:b.y,source:b.source,target:b.target}},
+forecastSourceValue:forecastSourceValue,
+forecastX:(sourceAxisKey==='x')?forecastSourceValue:targetValue,
+forecastY:(sourceAxisKey==='x')?targetValue:forecastSourceValue
+};
+}
+
+function xyGetSelectedForecastCurveData(){
+if(xyCurves.length===0){alert('No curves available.');return null;}
+if(xySelectedIdx<0||xySelectedIdx>=xyCurves.length){
+alert('Please select one curve from the list before using Forecast.');
+return null;
+}
+if(xyEditingIdx===xySelectedIdx)xyCommitEditingCurveDraft();
+var curve=xyCurves[xySelectedIdx];
+var data=xyNormalizeForecastData(curve?curve.data:null);
+if(!curve||!data){
+alert('Selected curve needs at least 2 valid points for Forecast.');
+return null;
+}
+return {curve:curve,data:data,index:xySelectedIdx,color:xyForecastGetCurveColor(curve,xySelectedIdx)};
+}
+
+function xyRefreshForecastFieldLabels(){
+var container=document.getElementById('xy-forecast-fields');
+if(!container)return;
+var axisEl=document.getElementById('xy-forecast-axis');
+var axisLetter=(axisEl&&axisEl.value==='y')?'Y':'X';
+var rows=container.querySelectorAll('.xy-forecast-row');
+for(var i=0;i<rows.length;i++){
+var row=rows[i];
+var lbl=row.querySelector('label');
+var inp=row.querySelector('input.xy-forecast-input');
+var rm=row.querySelector('.xy-forecast-remove');
+if(lbl)lbl.textContent='Forecast '+(i+1)+' ('+axisLetter+')';
+if(inp)inp.placeholder='Enter forecast '+axisLetter+' value';
+if(rm)rm.style.display=(rows.length>1)?'inline-block':'none';
+}
+}
+
+function xyAddForecastField(value){
+var container=document.getElementById('xy-forecast-fields');
+if(!container)return null;
+var row=document.createElement('div');
+row.className='xy-forecast-row';
+var field=document.createElement('div');
+field.className='xy-modal-field';
+var lbl=document.createElement('label');
+lbl.textContent='Forecast';
+var inp=document.createElement('input');
+inp.type='text';
+inp.className='xy-forecast-input';
+inp.value=(value!==undefined&&value!==null)?String(value):'';
+inp.onkeyup=function(event){if(event.key==='Enter')xyRunForecast();};
+field.appendChild(lbl);
+field.appendChild(inp);
+row.appendChild(field);
+var rm=document.createElement('button');
+rm.type='button';
+rm.className='xy-btn xy-btn-del xy-forecast-remove';
+rm.textContent='X';
+rm.onclick=function(){
+if(container.children.length<=1){
+inp.value='';
+inp.focus();
+return;
+}
+container.removeChild(row);
+xyRefreshForecastFieldLabels();
+};
+row.appendChild(rm);
+container.appendChild(row);
+xyRefreshForecastFieldLabels();
+return inp;
+}
+
+function xyResetForecastFields(){
+var container=document.getElementById('xy-forecast-fields');
+if(!container)return;
+container.innerHTML='';
+xyAddForecastField('');
+}
+
+function xyForecastAxisNameFromUi(inputId,fallback){
+var el=document.getElementById(inputId);
+var txt=el?String(el.value||'').trim():'';
+if(txt)return txt;
+return fallback;
+}
+
+function xyForecastGetDisplayAxisLabels(curve,axisKey){
+var isSecondary=!!(curve&&curve.axis==='secondary');
+var xAxisLabel=xyForecastAxisNameFromUi('xy-xname',(curve&&curve.xlabel)||'X');
+var primaryAxisLabel=xyForecastAxisNameFromUi('xy-yname',(!isSecondary&&(curve&&curve.ylabel))?curve.ylabel:'Y');
+var secondaryAxisLabel=xyForecastAxisNameFromUi('xy-syname',(isSecondary&&(curve&&curve.ylabel))?curve.ylabel:'Y (R)');
+var curveAxisLabel=isSecondary?secondaryAxisLabel:primaryAxisLabel;
+return {
+xAxisLabel:xAxisLabel,
+primaryAxisLabel:primaryAxisLabel,
+secondaryAxisLabel:secondaryAxisLabel,
+curveAxisLabel:curveAxisLabel,
+sourceAxisLabel:(axisKey==='y')?curveAxisLabel:xAxisLabel,
+targetAxisLabel:(axisKey==='y')?xAxisLabel:curveAxisLabel
+};
+}
+
+function xyForecastGetSecondaryRowLabel(sec,result,totalSecondary){
+var base=(result&&result.secondaryAxisLabel)?result.secondaryAxisLabel:((sec&&sec.ylabel)?sec.ylabel:'Y (R)');
+base=String(base||'').trim()||'Y (R)';
+if(totalSecondary>1&&sec&&sec.name){
+return base+' ('+sec.name+')';
+}
+return base;
+}
+
+function xyCollectForecastInputValues(){
+var container=document.getElementById('xy-forecast-fields');
+if(!container)return null;
+var inputs=container.querySelectorAll('input.xy-forecast-input');
+var out=[];
+for(var i=0;i<inputs.length;i++){
+var txt=inputs[i].value!==undefined?String(inputs[i].value).trim():'';
+if(!txt)continue;
+var v=xyForecastParseValue(txt);
+if(v===null){
+alert('Enter a valid number in Forecast '+(i+1)+'.');
+return null;
+}
+out.push({index:i+1,value:v});
+}
+if(out.length===0){
+alert('Add at least one Forecast value before running Forecast.');
+return null;
+}
+return out;
+}
+
+function xyUpdateForecastDialogText(curveOverride){
+var curve=curveOverride;
+if(!curve&&xySelectedIdx>=0&&xySelectedIdx<xyCurves.length)curve=xyCurves[xySelectedIdx];
+var curveInfo=document.getElementById('xy-forecast-curve-info');
+var axisNote=document.getElementById('xy-forecast-axis-note');
+var axisEl=document.getElementById('xy-forecast-axis');
+var axisKey=(axisEl&&axisEl.value==='y')?'y':'x';
+var axisLabels=xyForecastGetDisplayAxisLabels(curve,axisKey);
+var sourceLabel=axisLabels.sourceAxisLabel;
+var targetLabel=axisLabels.targetAxisLabel;
+var curveName=curve&&curve.name?curve.name:((xySelectedIdx>=0)?('Curve '+(xySelectedIdx+1)):'Selected curve');
+var axisSide=(curve&&curve.axis==='secondary')?('Secondary '+axisLabels.secondaryAxisLabel+' axis (R)'):('Primary '+axisLabels.primaryAxisLabel+' axis (L)');
+if(curveInfo)curveInfo.textContent='Curve: '+curveName+' | '+axisSide;
+if(axisNote)axisNote.textContent='All Forecast fields use "'+sourceLabel+'" as the reference and estimate "'+targetLabel+'" with the Multipole interpolation/extrapolation logic along the selected curve.';
+xyRefreshForecastFieldLabels();
+}
+
+function xyOpenForecastDialog(){
+var info=xyGetSelectedForecastCurveData();
+if(!info)return;
+xyForecastLastResult=null;
+xyCloseForecastResultDialog();
+xyResetForecastFields();
+xyUpdateForecastDialogText(info.curve);
+var ov=document.getElementById('xy-forecast-overlay');
+if(ov)ov.style.display='flex';
+var firstInput=document.querySelector('#xy-forecast-fields input.xy-forecast-input');
+if(firstInput)firstInput.focus();
+}
+
+function xyCloseForecastDialog(){
+var ov=document.getElementById('xy-forecast-overlay');
+if(ov)ov.style.display='none';
+}
+
+function xyCloseForecastResultDialog(){
+var ov=document.getElementById('xy-forecast-result-overlay');
+if(ov)ov.style.display='none';
+}
+
+function xyForecastGetSecondarySeries(excludeIdx){
+var series=[],skipped=[];
+for(var i=0;i<xyCurves.length;i++){
+var c=xyCurves[i];
+if(!c||c.axis!=='secondary'||i===excludeIdx)continue;
+var data=xyNormalizeForecastData(c.data);
+if(!data){skipped.push((c.name||('Curve '+(i+1)))+' (need at least 2 valid points)');continue;}
+var probe=xyForecastMultipole(data,'x',data[0][0]);
+if(!probe){skipped.push((c.name||('Curve '+(i+1)))+' (need valid X sequence for Multipole)');continue;}
+series.push({
+name:c.name||('Curve '+(i+1)),
+color:xyForecastGetCurveColor(c,i),
+data:data,
+ylabel:c.ylabel||'Y',
+xlabel:c.xlabel||'X'
+});
+}
+return {series:series,skipped:skipped};
+}
+
+function xyForecastEvaluateSecondaryAtX(forecastX,secondarySeries){
+var results=[];
+for(var i=0;i<secondarySeries.length;i++){
+var it=secondarySeries[i];
+var calc=xyForecastMultipole(it.data,'x',forecastX);
+if(!calc)continue;
+results.push({
+name:it.name,
+color:it.color,
+forecastX:calc.forecastX,
+forecastY:calc.forecastY,
+mode:calc.mode,
+methodLabel:calc.methodLabel,
+segment:calc.segment,
+count:calc.count,
+ylabel:it.ylabel,
+xlabel:it.xlabel
+});
+}
+return results;
+}
+
+function xyForecastResultRowHtml(label,value,color){
+var bg=xyForecastSafeColor(color,'#8E24AA');
+var fg=xyForecastTextColorForBg(bg);
+return '<div class="xy-result-row"><span class="xy-result-chip" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span>'+xyEscapeHtml(value)+'</span></div>';
+}
+
+function xyForecastResultForecastRowHtml(sourceAxisLabel,sourceValue,targetAxisLabel,targetValue,color){
+var bg=xyForecastSafeColor(color,'#8E24AA');
+var fg=xyForecastTextColorForBg(bg);
+return '<div class="xy-result-row"><span class="xy-result-chip" style="background:'+bg+';color:'+fg+'">Forecast</span><span>'+xyEscapeHtml(sourceAxisLabel)+' = '+xyForecastFormatNumber(sourceValue)+' | <span class="xy-result-value-highlight">'+xyEscapeHtml(targetAxisLabel)+' = '+xyForecastFormatNumber(targetValue)+'</span></span></div>';
+}
+
+function xyForecastResultBlockHtml(title,color,rows){
+var bg=xyForecastSafeColor(color,'#8E24AA');
+return '<div class="xy-result-block" style="border-left-color:'+bg+'"><div class="xy-result-block-title" style="color:'+bg+'">'+xyEscapeHtml(title)+'</div>'+rows.join('')+'</div>';
+}
+
+function xyRenderForecastResult(result){
+var body=document.getElementById('xy-forecast-result-body');
+if(!body||!result)return;
+var html=[];
+html.push('<div><span class="xy-result-chip" style="min-width:0;background:#6A1B9A;color:#fff">Forecast Result</span></div>');
+for(var i=0;i<result.entries.length;i++){
+var entry=result.entries[i];
+var mainRows=[];
+mainRows.push(xyForecastResultRowHtml('Axis',result.sourceAxisLetter+' -> '+result.targetAxisLetter+' | '+result.axisCaption,result.curveColor));
+var primaryTargetValue=(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY;
+mainRows.push(xyForecastResultForecastRowHtml(result.sourceAxisLetter,entry.inputValue,result.targetAxisLetter,primaryTargetValue,result.curveColor));
+html.push(xyForecastResultBlockHtml(result.curveName, result.curveColor, mainRows));
+}
+if(result.includeSecondary){
+for(var ei=0;ei<result.entries.length;ei++){
+var e=result.entries[ei];
+if(e.secondary.length===0){
+html.push(xyForecastResultBlockHtml('Secondary Axis','#757575',[xyForecastResultRowHtml('Axis','X -> Y | Secondary Y axis (R)','#757575'),xyForecastResultRowHtml('Forecast','No secondary-axis result available for this forecast value.','#757575')]));
+continue;
+}
+for(var si=0;si<e.secondary.length;si++){
+var sec=e.secondary[si];
+var secRows=[];
+secRows.push(xyForecastResultRowHtml('Axis','X -> Y | Secondary Y axis (R)',sec.color));
+secRows.push(xyForecastResultForecastRowHtml('X',e.forecastX,'Y',sec.forecastY,sec.color));
+html.push(xyForecastResultBlockHtml(sec.name, sec.color, secRows));
+}
+}
+}
+body.innerHTML=html.join('');
+}
+
+function xyBuildForecastDialogText(result,format,decimals){
+if(!result)return 'Forecast result unavailable';
+var lines=[];
+lines.push('Forecast Result');
+for(var i=0;i<result.entries.length;i++){
+var entry=result.entries[i];
+lines.push('');
+lines.push(result.curveName);
+lines.push((result.sourceAxisLabel||result.sourceAxisLetter||'X')+': '+formatForecastDialogValue(entry.inputValue,format,decimals));
+lines.push((result.targetAxisLabel||result.targetAxisLetter||'Y')+': '+formatForecastDialogValue((result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,format,decimals));
+if(result.includeSecondary&&Array.isArray(entry.secondary)&&entry.secondary.length>0){
+for(var si=0;si<entry.secondary.length;si++){
+var sec=entry.secondary[si];
+lines.push(xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length)+': '+formatForecastDialogValue(sec.forecastY,format,decimals));
+}
+}
+}
+return lines.join('\\n');
+}
+
+function xyForecastDialogRowHtml(label,value,color){
+var bg=xyForecastSafeColor(color,'#8E24AA');
+var fg=xyForecastTextColorForBg(bg);
+return '<div class="dlg-rich-row" style="--dlg-accent:'+bg+'"><span class="dlg-rich-tag" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span class="dlg-rich-val">'+xyEscapeHtml(value)+'</span></div>';
+}
+
+function xyForecastDialogNumberRowHtml(label,value,color,format,decimals,highlight){
+var bg=xyForecastSafeColor(color,'#8E24AA');
+var fg=xyForecastTextColorForBg(bg);
+var valHtml=xyEscapeHtml(formatForecastDialogValue(value,format,decimals));
+if(highlight)valHtml='<span class="dlg-rich-result">'+valHtml+'</span>';
+return '<div class="dlg-rich-row" style="--dlg-accent:'+bg+'"><span class="dlg-rich-tag" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span class="dlg-rich-val">'+valHtml+'</span></div>';
+}
+
+function xyForecastDialogSectionHtml(title,color,rows){
+var bg=xyForecastSafeColor(color,'#8E24AA');
+return '<div class="dlg-rich-sec" style="--dlg-accent:'+bg+'"><div class="dlg-rich-sec-title">'+xyEscapeHtml(title)+'</div>'+rows.join('')+'</div>';
+}
+
+function xyBuildForecastDialogHtml(result,format,decimals){
+if(!result)return '<div class="dlg-rich-head">Forecast Result</div>';
+var html=['<div class="dlg-rich-head">Forecast Result</div>'];
+for(var i=0;i<result.entries.length;i++){
+var entry=result.entries[i];
+var mainRows=[];
+mainRows.push(xyForecastDialogNumberRowHtml(result.sourceAxisLabel||result.sourceAxisLetter||'X',entry.inputValue,result.curveColor,format,decimals,false));
+mainRows.push(xyForecastDialogNumberRowHtml(result.targetAxisLabel||result.targetAxisLetter||'Y',(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,result.curveColor,format,decimals,true));
+if(result.includeSecondary&&Array.isArray(entry.secondary)&&entry.secondary.length>0){
+for(var si=0;si<entry.secondary.length;si++){
+var sec=entry.secondary[si];
+mainRows.push(xyForecastDialogNumberRowHtml(xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length),sec.forecastY,sec.color||result.curveColor,format,decimals,true));
+}
+}
+html.push(xyForecastDialogSectionHtml(result.curveName, result.curveColor, mainRows));
+}
+return html.join('');
+}
+
+function getForecastDialogDecimals(box){
+var n=parseInt(box&&box.forecastDialogDecimals,10);
+if(!isFinite(n))n=6;
+return Math.max(0,Math.min(10,n));
+}
+
+function isForecastDialogBox(box){
+return !!(box&&box.forecastDialogData&&typeof box.forecastDialogData==='object');
+}
+
+function buildForecastDialogClipboardRows(box){
+if(!isForecastDialogBox(box))return [];
+var result=box.forecastDialogData;
+if(!result||!Array.isArray(result.entries)||result.entries.length===0)return [];
+var format=getForecastDialogFormat(box);
+var decimals=getForecastDialogDecimals(box);
+var rows=[['Source Axis','Source Value','Target Axis','Target Value']];
+for(var i=0;i<result.entries.length;i++){
+var entry=result.entries[i];
+if(!entry)continue;
+var primaryTargetValue=(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY;
+rows.push([
+result.sourceAxisLabel||result.sourceAxisLetter||'X',
+formatForecastDialogValue(entry.inputValue,format,decimals),
+result.targetAxisLabel||result.targetAxisLetter||'Y',
+formatForecastDialogValue(primaryTargetValue,format,decimals)
+]);
+if(result.includeSecondary){
+if(Array.isArray(entry.secondary)&&entry.secondary.length>0){
+for(var si=0;si<entry.secondary.length;si++){
+var sec=entry.secondary[si];
+if(!sec)continue;
+rows.push([
+(result.xAxisLabel||'X'),
+formatForecastDialogValue(entry.forecastX,format,decimals),
+xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length),
+formatForecastDialogValue(sec.forecastY,format,decimals)
+]);
+}
+}
+}
+}
+return rows;
+}
+
+function buildForecastDialogClipboardText(box){
+var rows=buildForecastDialogClipboardRows(box);
+if(rows.length===0)return '';
+return rows.map(function(row){
+return row.map(function(cell){
+return String(cell===undefined||cell===null?'':cell).replace(/\\r?\\n/g,' ');
+}).join('\\t');
+}).join('\\n');
+}
+
+function copyForecastDialogBoxData(box){
+if(!isForecastDialogBox(box)){
+document.getElementById('st').textContent='Copy is only available for Forecast Dialog Boxes';
+return;
+}
+var rows=buildForecastDialogClipboardRows(box);
+if(rows.length<=1){
+document.getElementById('st').textContent='Forecast Dialog has no data to copy';
+return;
+}
+var text=buildForecastDialogClipboardText(box);
+function okMsg(){
+document.getElementById('st').textContent='Forecast Dialog copied ('+(rows.length-1)+' row'+((rows.length-1)===1?'':'s')+')';
+}
+try{
+navigator.clipboard.writeText(text).then(okMsg).catch(function(){xyFallbackCopy(text);});
+}catch(e){xyFallbackCopy(text);}
+}
+
+function refreshForecastDialogBoxContent(box){
+if(!box||!box.body||!isForecastDialogBox(box))return;
+var format=getForecastDialogFormat(box);
+var decimals=getForecastDialogDecimals(box);
+box.forecastDialogFormat=format;
+box.forecastDialogDecimals=decimals;
+box.text=xyBuildForecastDialogText(box.forecastDialogData,format,decimals);
+box.body.className='dialog-body dialog-body-rich';
+box.richHtml=xyBuildForecastDialogHtml(box.forecastDialogData,format,decimals);
+box.body.innerHTML=box.richHtml;
+refreshDialogCopyButton(box);
+syncDialogTextSnapshot(box);
+syncDialogBoxSize(box);
+if(dialogFontBoxId===box.id)syncDialogFontPopup(box);
+}
+
+function xyApplyForecastDialogBoxContent(box,result){
+if(!box||!box.body||!result)return;
+box.readOnly=true;
+box.allowRichEdit=false;
+box.forecastDialogData=cfgClone(result);
+box.forecastDialogFormat=getForecastDialogFormat(box);
+box.forecastDialogDecimals=getForecastDialogDecimals(box);
+box.text=xyBuildForecastDialogText(result,box.forecastDialogFormat,box.forecastDialogDecimals);
+box.body.className='dialog-body dialog-body-rich';
+box.richHtml=xyBuildForecastDialogHtml(result,box.forecastDialogFormat,box.forecastDialogDecimals);
+box.body.innerHTML=box.richHtml;
+refreshDialogCopyButton(box);
+refreshDialogEditButton(box);
+applyDialogTextStyle(box);
+}
+
+function xyCreateForecastDialogBox(){
+if(!xyForecastLastResult){alert('Run Forecast first.');return;}
+if(!cvEl){alert('Viewer canvas not ready.');return;}
+var cb=document.getElementById('dlg-on');
+if(cb&&!cb.checked){
+cb.checked=true;
+tgDialogMode(true);
+}
+dialogAddArmed=false;
+hideDialogPreview();
+var rect=cvEl.getBoundingClientRect();
+var clientX=rect.left+Math.max(36,Math.min(rect.width-36,rect.width*0.62));
+var clientY=rect.top+Math.max(36,Math.min(rect.height-36,rect.height*0.22));
+var box=createDialogBoxAtClient(clientX,clientY);
+if(!box){
+alert('Could not create Dialog Box inside the viewer area.');
+return;
+}
+xyApplyForecastDialogBoxContent(box,xyForecastLastResult);
+syncDialogBoxSize(box);
+setDialogEditing(box,false);
+updateDialogBoxesVisuals();
+document.getElementById('st').textContent='Forecast Dialog Box created';
+}
+
+function xyRunForecast(){
+var info=xyGetSelectedForecastCurveData();
+if(!info)return;
+var axisEl=document.getElementById('xy-forecast-axis');
+var axisKey=(axisEl&&axisEl.value==='y')?'y':'x';
+var sourceAxisLetter=(axisKey==='y')?'Y':'X';
+var targetAxisLetter=(axisKey==='y')?'X':'Y';
+var axisLabels=xyForecastGetDisplayAxisLabels(info.curve,axisKey);
+var sourceAxisLabel=axisLabels.sourceAxisLabel;
+var targetAxisLabel=axisLabels.targetAxisLabel;
+var inputs=xyCollectForecastInputValues();
+if(!inputs)return;
+var includeSecondary=!!(document.getElementById('xy-forecast-secondary')&&document.getElementById('xy-forecast-secondary').checked);
+var secondaryPack=includeSecondary?xyForecastGetSecondarySeries(info.index):{series:[],skipped:[]};
+var entries=[];
+for(var i=0;i<inputs.length;i++){
+var srcVal=inputs[i].value;
+var calc=xyForecastMultipole(info.data,axisKey,srcVal);
+if(!calc)continue;
+entries.push({
+label:'Forecast '+inputs[i].index,
+sourceAxisLetter:sourceAxisLetter,
+inputValue:srcVal,
+forecastX:calc.forecastX,
+forecastY:calc.forecastY,
+mode:calc.mode,
+methodLabel:calc.methodLabel,
+segment:calc.segment,
+count:calc.count,
+secondary:includeSecondary?xyForecastEvaluateSecondaryAtX(calc.forecastX,secondaryPack.series):[]
+});
+}
+if(entries.length===0){
+alert('Forecast could not be calculated for the entered values.');
+return;
+}
+xyForecastLastResult={
+curveName:info.curve.name||('Curve '+(info.index+1)),
+curveColor:info.color,
+curveAxis:(info.curve.axis==='secondary')?'secondary':'primary',
+axisCaption:(info.curve.axis==='secondary')?'Secondary Y axis (R)':'Primary Y axis (L)',
+sourceAxisLetter:sourceAxisLetter,
+targetAxisLetter:targetAxisLetter,
+sourceAxisLabel:sourceAxisLabel,
+targetAxisLabel:targetAxisLabel,
+xAxisLabel:axisLabels.xAxisLabel,
+primaryAxisLabel:axisLabels.primaryAxisLabel,
+secondaryAxisLabel:axisLabels.secondaryAxisLabel,
+dataPointCount:info.data.length,
+includeSecondary:includeSecondary,
+entries:entries,
+secondarySkipped:secondaryPack.skipped
+};
+xyRenderForecastResult(xyForecastLastResult);
+xyCloseForecastDialog();
+var ov=document.getElementById('xy-forecast-result-overlay');
+if(ov)ov.style.display='flex';
+document.getElementById('st').textContent='Forecast created for '+(info.curve.name||('Curve '+(info.index+1)));
 }
 
 function xyDerivativeCurve(){
@@ -11269,6 +12997,46 @@ if(inputs[1]&&xySelCols.y)inputs[1].classList.add('xy-col-sel');
 
 function xyAddRow(){xyAddTableRow('','');}
 
+function xyIsDefaultOriginRow(xv,yv){
+var xNum=Number(xv),yNum=Number(yv);
+if(!isFinite(xNum)||!isFinite(yNum))return false;
+return Math.abs(xNum)<=1e-12&&Math.abs(yNum)<=1e-12;
+}
+
+function xyCurveHasOnlyDefaultOriginRow(curve){
+if(!curve||!Array.isArray(curve.data)||curve.data.length!==1)return false;
+var p=curve.data[0];
+if(!p||p.length<2)return false;
+return xyIsDefaultOriginRow(p[0],p[1]);
+}
+
+function xyTableHasOnlyDefaultOriginRow(){
+var tbody=document.getElementById('xy-tbody');
+if(!tbody)return false;
+var rows=tbody.querySelectorAll('tr');
+if(rows.length!==1)return false;
+var inputs=rows[0].querySelectorAll('input');
+if(inputs.length<2)return false;
+return xyIsDefaultOriginRow(parseFloat(inputs[0].value),parseFloat(inputs[1].value));
+}
+
+function xyAppendOrReplaceEditingCurveData(data,axisType,xLabel,yLabel){
+if(xyEditingIdx<0||xyEditingIdx>=xyCurves.length||!Array.isArray(data)||data.length===0)return false;
+var c=xyCurves[xyEditingIdx];
+var replacePlaceholder=xyCurveHasOnlyDefaultOriginRow(c);
+if(replacePlaceholder){
+c.data=data.slice();
+c.axis=axisType||c.axis||'primary';
+c.xlabel=xLabel||c.xlabel||'X';
+c.ylabel=yLabel||c.ylabel||'Y';
+if(yLabel)c.name=yLabel;
+return true;
+}
+var baseData=Array.isArray(c.data)?c.data.slice():[];
+c.data=baseData.concat(data);
+return false;
+}
+
 function xyPasteData(){
 try{
 navigator.clipboard.readText().then(function(text){xyParseAndFill(text);}).catch(function(){
@@ -11303,9 +13071,10 @@ if(!isNaN(xv)&&!isNaN(y1))d1.push([xv,y1]);
 if(!isNaN(xv)&&!isNaN(y2))d2.push([xv,y2]);
 }
 if(d1.length>0){
-var c=xyCurves[xyEditingIdx];
-c.data=d1;c.axis='primary';
+var replacedPrimary=xyAppendOrReplaceEditingCurveData(d1,'primary','X','Y');
+if(replacedPrimary){
 document.getElementById('xy-axis-pri').checked=true;
+}
 }
 if(d2.length>0){
 var idx=xyCurves.length;
@@ -11354,7 +13123,7 @@ for(var ri=0;ri<existingRows.length;ri++){
 var inputs=existingRows[ri].querySelectorAll('input');
 if(inputs[0].value.trim()||inputs[1].value.trim()){hasData=true;break;}
 }
-if(!hasData)tbody.innerHTML='';
+if(!hasData||xyTableHasOnlyDefaultOriginRow())tbody.innerHTML='';
 for(var pi=0;pi<parsed.length;pi++){xyAddTableRow(parsed[pi][0],parsed[pi][1]);}
 xyRenumberRows();
 document.getElementById('st').textContent='Pasted '+parsed.length+' data points';
@@ -11460,6 +13229,14 @@ dBtn.style.display=hasCurves?'inline-block':'none';
 dBtn.disabled=!hasSelection;
 dBtn.title=hasSelection?'Create derivative from selected curve':'Select one curve first';
 }
+var fBtn=document.getElementById('xy-forecast-btn');
+if(fBtn){
+var hasCurvesF=xyCurves.length>0;
+var hasSelectionF=xySelectedIdx>=0&&xySelectedIdx<xyCurves.length;
+fBtn.style.display=hasCurvesF?'inline-block':'none';
+fBtn.disabled=!hasSelectionF;
+fBtn.title=hasSelectionF?'Create forecast from selected curve':'Select one curve first';
+}
 xyRefreshHideButton();
 }
 
@@ -11526,7 +13303,6 @@ s.plotTitle=document.getElementById('xy-plot-title').value;
 function xyLoadSheet(idx){
 var s=xySheets[idx];
 xyCurves=JSON.parse(JSON.stringify(s.curves));
-xyEnforcePhaseAngleSecondary(xyCurves);
 xySelectedIdx=s.selectedIdx;
 xyEditingIdx=-1;
 xyPinned=JSON.parse(JSON.stringify(s.pinned||[]));
@@ -11640,7 +13416,7 @@ xyUpdatePlotSize();
 // ==================== VIEW CUT MANAGER ====================
 var clipEnabled=[false,false,false];
 var clipPlanesThree=[new THREE.Plane(),new THREE.Plane(),new THREE.Plane()];
-var rotationClipPlaneThree=new THREE.Plane();
+var rotationClipPlaneThree=new THREE.Plane(),rotationClipPlaneThree2=new THREE.Plane();
 var activeClipPlanesArr=[];
 function anyCutEnabled(){return clipEnabled[0]||clipEnabled[1]||clipEnabled[2]||!!(cutPlanes.rotation&&cutPlanes.rotation.on);}
 function clampCutPercent(v){
@@ -11710,13 +13486,18 @@ planeLabel:'XY'
 }
 function sanitizeRotationCutState(src){
 src=src||{};
+var dir=(src.dir==='-')?'-':'+';
 return{
 on:!!src.on,
 axis:(src.axis==='y'||src.axis==='z')?src.axis:'x',
 angle:Math.max(0,Math.min(360,parseInt(src.angle,10)||0)),
-dir:(src.dir==='-')?'-':'+',
+dir:dir,
+angle2On:!!src.angle2On,
+angle2:Math.max(0,Math.min(180,parseInt(src.angle2,10)||0)),
+dir2:dir,
 refA:clampCutPercent(src.refA),
-refB:clampCutPercent(src.refB)
+refB:clampCutPercent(src.refB),
+hidePlane:!!src.hidePlane
 };
 }
 function readRotationCutStateFromUi(){
@@ -11725,16 +13506,32 @@ var onEl=document.getElementById('rot-cut-on');
 var axisEl=document.getElementById('rot-cut-axis');
 var angleEl=document.getElementById('rot-cut-angle');
 var dirEl=document.getElementById('rot-cut-dir');
+var angle2Btn=document.getElementById('rot-cut-angle2-toggle');
+var angle2El=document.getElementById('rot-cut-angle2');
 var refAEl=document.getElementById('rot-cut-ref-a');
 var refBEl=document.getElementById('rot-cut-ref-b');
+var hidePlaneEl=document.getElementById('rot-cut-hide-plane');
 return sanitizeRotationCutState({
 on:onEl?onEl.checked:state.on,
 axis:axisEl?axisEl.value:state.axis,
 angle:angleEl?angleEl.value:state.angle,
 dir:dirEl?dirEl.value:state.dir,
+angle2On:angle2Btn?(angle2Btn.getAttribute('data-on')==='1'):state.angle2On,
+angle2:angle2El?angle2El.value:state.angle2,
+dir2:dirEl?dirEl.value:state.dir,
 refA:refAEl?refAEl.value:state.refA,
-refB:refBEl?refBEl.value:state.refB
+refB:refBEl?refBEl.value:state.refB,
+hidePlane:hidePlaneEl?hidePlaneEl.checked:state.hidePlane
 });
+}
+function updateRotationCutAngle2Button(enabled){
+var btn=document.getElementById('rot-cut-angle2-toggle');
+if(!btn)return;
+btn.setAttribute('data-on',enabled?'1':'0');
+btn.textContent=enabled?'On':'Off';
+btn.style.background=enabled?'#43A047':'#F44336';
+btn.style.borderColor=enabled?'#1B5E20':'#B71C1C';
+btn.style.color='#fff';
 }
 function updateRotationCutUi(state){
 state=sanitizeRotationCutState(state||cutPlanes.rotation||{});
@@ -11745,6 +13542,9 @@ var axisEl=document.getElementById('rot-cut-axis');
 var angleEl=document.getElementById('rot-cut-angle');
 var angleVal=document.getElementById('rot-cut-angle-val');
 var dirEl=document.getElementById('rot-cut-dir');
+var angle2Row=document.getElementById('rot-cut-angle2-row');
+var angle2El=document.getElementById('rot-cut-angle2');
+var angle2Val=document.getElementById('rot-cut-angle2-val');
 var refAEl=document.getElementById('rot-cut-ref-a');
 var refBEl=document.getElementById('rot-cut-ref-b');
 var refALbl=document.getElementById('rot-cut-ref-a-lbl');
@@ -11752,13 +13552,20 @@ var refBLbl=document.getElementById('rot-cut-ref-b-lbl');
 var refAVal=document.getElementById('rot-cut-ref-a-val');
 var refBVal=document.getElementById('rot-cut-ref-b-val');
 var planeHint=document.getElementById('rot-cut-plane-hint');
+var hidePlaneEl=document.getElementById('rot-cut-hide-plane');
+var resetAllBtn=document.getElementById('rot-cut-reset-all-btn');
 var info=getRotationCutAxisInfo(state.axis);
 if(onEl)onEl.checked=state.on;
 if(controls)controls.style.display=state.on?'block':'none';
+if(resetAllBtn)resetAllBtn.style.display=state.on?'inline-block':'none';
 if(axisEl)axisEl.value=info.axis;
 if(angleEl)angleEl.value=String(state.angle);
 if(angleVal)angleVal.innerHTML=String(state.angle)+'&deg;';
 if(dirEl)dirEl.value=state.dir;
+updateRotationCutAngle2Button(state.angle2On);
+if(angle2Row)angle2Row.style.display=state.angle2On?'flex':'none';
+if(angle2El)angle2El.value=String(state.angle2);
+if(angle2Val)angle2Val.innerHTML=String(state.angle2)+'&deg;';
 if(refAEl)refAEl.value=String(state.refA);
 if(refBEl)refBEl.value=String(state.refB);
 if(refALbl)refALbl.textContent=info.refLabels[0];
@@ -11766,6 +13573,21 @@ if(refBLbl)refBLbl.textContent=info.refLabels[1];
 if(refAVal)refAVal.textContent=String(state.refA)+'%';
 if(refBVal)refBVal.textContent=String(state.refB)+'%';
 if(planeHint)planeHint.innerHTML='0&deg; =&gt; '+info.planeLabel+' plane';
+if(hidePlaneEl)hidePlaneEl.checked=!!state.hidePlane;
+}
+function toggleRotationCutAngle2(force){
+var state=readRotationCutStateFromUi();
+var next=(force===undefined)?(!state.angle2On):!!force;
+if(next&&!state.angle2On){
+state.angle2=0;
+state.dir2=state.dir;
+}
+state.angle2On=next;
+cutPlanes.rotation=sanitizeRotationCutState(state);
+updateRotationCutUi(cutPlanes.rotation);
+applyCutClipping();
+updateValueWindowsForCut();
+scheduleCutMeshRebuild();
 }
 function buildAxisAlignedCut(axis){
 var cfg=cutPlanes[axis];
@@ -11788,14 +13610,165 @@ else{normal=[0,0,1];constant=-cutPos;}
 }
 return{type:'axis',axis:axis,normal:normal,constant:constant};
 }
+function hideAxisCutPlanesEnabled(){
+var el=document.getElementById('cut-hide-planes');
+return !!(el&&el.checked);
+}
+function getAxisCutVisualStyle(axis){
+if(axis==='x')return{mesh:0xEF5350,edge:0xC62828};
+if(axis==='y')return{mesh:0x66BB6A,edge:0x2E7D32};
+return{mesh:0x42A5F5,edge:0x1565C0};
+}
+function getAxisCutVisualData(axis){
+var cfg=cutPlanes[axis];
+if(!cfg||!cfg.on)return null;
+var posInfo=getAxisRangeInfo(axis);
+var cutPos=posInfo.min+(clampCutPercent(cfg.pos)/100)*posInfo.range;
+var xInfo=getAxisRangeInfo('x');
+var yInfo=getAxisRangeInfo('y');
+var zInfo=getAxisRangeInfo('z');
+var diag=getMeshDiagonalSize();
+var point=new THREE.Vector3(xInfo.mid,yInfo.mid,zInfo.mid);
+var uDir=new THREE.Vector3(1,0,0),vDir=new THREE.Vector3(0,1,0),normal=new THREE.Vector3(0,0,1);
+var width=Math.max(diag*0.18,1e-9),height=Math.max(diag*0.18,1e-9);
+if(axis==='x'){
+point.x=cutPos;
+uDir.set(0,1,0);
+vDir.set(0,0,1);
+normal.set(1,0,0);
+width=Math.max(yInfo.range*1.18,diag*0.18);
+height=Math.max(zInfo.range*1.18,diag*0.18);
+}else if(axis==='y'){
+point.y=cutPos;
+uDir.set(1,0,0);
+vDir.set(0,0,1);
+normal.set(0,1,0);
+width=Math.max(xInfo.range*1.18,diag*0.18);
+height=Math.max(zInfo.range*1.18,diag*0.18);
+}else{
+point.z=cutPos;
+uDir.set(1,0,0);
+vDir.set(0,1,0);
+normal.set(0,0,1);
+width=Math.max(xInfo.range*1.18,diag*0.18);
+height=Math.max(yInfo.range*1.18,diag*0.18);
+}
+return{
+axis:axis,
+point:point,
+uDir:uDir,
+vDir:vDir,
+normal:normal,
+width:width,
+height:height,
+style:getAxisCutVisualStyle(axis)
+};
+}
+function ensureAxisCutVisual(axis){
+if(!sc)return;
+if(!axisCutPlaneMeshes[axis]){
+var style=getAxisCutVisualStyle(axis);
+var planeGeo=new THREE.PlaneGeometry(1,1,1,1);
+axisCutPlaneMeshes[axis]=new THREE.Mesh(planeGeo,new THREE.MeshBasicMaterial({color:style.mesh,transparent:true,opacity:0.13,side:THREE.DoubleSide,depthWrite:false}));
+axisCutPlaneMeshes[axis].renderOrder=994;
+axisCutPlaneMeshes[axis].frustumCulled=false;
+sc.add(axisCutPlaneMeshes[axis]);
+axisCutPlaneEdges[axis]=new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),new THREE.LineBasicMaterial({color:style.edge,transparent:true,opacity:0.88,depthTest:false}));
+axisCutPlaneEdges[axis].renderOrder=995;
+axisCutPlaneEdges[axis].frustumCulled=false;
+sc.add(axisCutPlaneEdges[axis]);
+}
+}
+function setAxisCutVisualVisibility(axis,show){
+if(axisCutPlaneMeshes[axis])axisCutPlaneMeshes[axis].visible=show;
+if(axisCutPlaneEdges[axis])axisCutPlaneEdges[axis].visible=show;
+}
+function updateAxisCutVisuals(){
+if(!sc)return;
+var hide=hideAxisCutPlanesEnabled();
+['x','y','z'].forEach(function(axis){
+ensureAxisCutVisual(axis);
+var data=getAxisCutVisualData(axis);
+if(!data||hide){
+setAxisCutVisualVisibility(axis,false);
+return;
+}
+var basis=new THREE.Matrix4();
+basis.makeBasis(data.uDir.clone().normalize(),data.vDir.clone().normalize(),data.normal.clone().normalize());
+var quat=new THREE.Quaternion().setFromRotationMatrix(basis);
+if(axisCutPlaneMeshes[axis]){
+axisCutPlaneMeshes[axis].position.copy(data.point);
+axisCutPlaneMeshes[axis].quaternion.copy(quat);
+axisCutPlaneMeshes[axis].scale.set(data.width,data.height,1);
+}
+if(axisCutPlaneEdges[axis]){
+axisCutPlaneEdges[axis].position.copy(data.point);
+axisCutPlaneEdges[axis].quaternion.copy(quat);
+axisCutPlaneEdges[axis].scale.set(data.width,data.height,1);
+}
+setAxisCutVisualVisibility(axis,true);
+});
+}
+function buildRotationCutPlaneData(axisDir,baseNormal,refPoint,angleDeg,dirValue){
+var baseNormalUnit=baseNormal.clone().normalize();
+var planeNormal=baseNormalUnit.clone();
+var signedAngle=((dirValue==='-')?-1:1)*((parseFloat(angleDeg)||0)*Math.PI/180.0);
+planeNormal.applyAxisAngle(axisDir,signedAngle).normalize();
+var clipNormal=(dirValue==='-')?planeNormal.clone():planeNormal.clone().negate();
+var constant=-clipNormal.dot(refPoint);
+var planeDir=planeNormal.clone().cross(axisDir).normalize();
+if(planeDir.lengthSq()<1e-16){
+planeDir=new THREE.Vector3(0,1,0).cross(axisDir).normalize();
+if(planeDir.lengthSq()<1e-16)planeDir=new THREE.Vector3(0,0,1).cross(axisDir).normalize();
+}
+return{
+planeNormal:planeNormal,
+clipNormal:clipNormal,
+constant:constant,
+planeDir:planeDir
+};
+}
+function getRotationCutSignedAngleRad(angleDeg,dirValue){
+return ((dirValue==='-')?-1:1)*((parseFloat(angleDeg)||0)*Math.PI/180.0);
+}
+function getRotationCutSecondaryAngleDeg(state){
+state=sanitizeRotationCutState(state||{});
+return (parseFloat(state.angle)||0)+(parseFloat(state.angle2)||0);
+}
+function chooseRotationCutSectorMid(axisDir,baseNormal,angle1,dir1,angle2,dir2){
+if(!axisDir||!baseNormal)return null;
+var axis=axisDir.clone().normalize();
+var base=baseNormal.clone().normalize();
+if(axis.lengthSq()<1e-16||base.lengthSq()<1e-16)return null;
+var visibleBase=(dir1==='-')?base:base.clone().negate();
+var sAngle1=getRotationCutSignedAngleRad(angle1,dir1);
+var sAngle2=getRotationCutSignedAngleRad(angle2,dir2);
+var delta=Math.atan2(Math.sin(sAngle2-sAngle1),Math.cos(sAngle2-sAngle1));
+var midAngle=sAngle1+(delta*0.5);
+var sectorMid=visibleBase.clone().applyAxisAngle(axis,midAngle);
+if(sectorMid.lengthSq()<1e-16)return null;
+return sectorMid.normalize();
+}
+function orientRotationCutPlaneToSector(planeData,sectorMid){
+if(!planeData||!sectorMid||sectorMid.lengthSq()<1e-16)return planeData;
+var clipNormal=planeData.clipNormal.clone();
+var constant=planeData.constant;
+if(clipNormal.dot(sectorMid)<0){
+clipNormal.negate();
+constant=-constant;
+}
+return{
+planeNormal:planeData.planeNormal,
+clipNormal:clipNormal,
+constant:constant,
+planeDir:planeData.planeDir
+};
+}
 function getRotationCutData(){
 var state=sanitizeRotationCutState(cutPlanes.rotation||{});
 if(!state.on)return null;
 var info=getRotationCutAxisInfo(state.axis);
 var axisDir=info.dir.clone().normalize();
-var planeNormal=info.baseNormal.clone().normalize();
-var signedAngle=((state.dir==='-')?-1:1)*(state.angle*Math.PI/180.0);
-planeNormal.applyAxisAngle(axisDir,signedAngle).normalize();
 var refPoint=new THREE.Vector3(
 getAxisRangeInfo('x').mid,
 getAxisRangeInfo('y').mid,
@@ -11805,13 +13778,20 @@ var refAInfo=getAxisRangeInfo(info.refAxes[0]);
 var refBInfo=getAxisRangeInfo(info.refAxes[1]);
 refPoint[info.refAxes[0]]=refAInfo.min+(state.refA/100)*refAInfo.range;
 refPoint[info.refAxes[1]]=refBInfo.min+(state.refB/100)*refBInfo.range;
-var clipNormal=planeNormal.clone().negate();
-var constant=planeNormal.dot(refPoint);
-var planeDir=planeNormal.clone().cross(axisDir).normalize();
-if(planeDir.lengthSq()<1e-16){
-planeDir=new THREE.Vector3(0,1,0).cross(axisDir).normalize();
-if(planeDir.lengthSq()<1e-16)planeDir=new THREE.Vector3(0,0,1).cross(axisDir).normalize();
+var primaryAngle=state.angle;
+var secondaryAngle=state.angle2On?getRotationCutSecondaryAngleDeg(state):null;
+var baseVisible=(state.dir==='-')?info.baseNormal.clone():info.baseNormal.clone().negate();
+var primary=buildRotationCutPlaneData(axisDir,info.baseNormal,refPoint,primaryAngle,state.dir);
+var secondary=state.angle2On?buildRotationCutPlaneData(axisDir,info.baseNormal,refPoint,secondaryAngle,state.dir2):null;
+if(state.angle2On&&secondary){
+var sectorMid=chooseRotationCutSectorMid(axisDir,info.baseNormal,primaryAngle,state.dir,secondaryAngle,state.dir2);
+if(sectorMid){
+primary=orientRotationCutPlaneToSector(primary,sectorMid);
+secondary=orientRotationCutPlaneToSector(secondary,sectorMid);
 }
+}
+var splitDir=info.baseNormal.clone().cross(axisDir).normalize();
+if(splitDir.lengthSq()<1e-16)splitDir=primary.planeDir.clone();
 var axisInfo=getAxisRangeInfo(info.axis);
 var diag=getMeshDiagonalSize();
 var linePad=Math.max(diag*0.08,axisInfo.range*0.05);
@@ -11826,10 +13806,18 @@ enabled:true,
 state:state,
 info:info,
 axisDir:axisDir,
-planeNormal:planeNormal,
-clipNormal:clipNormal,
-constant:constant,
-planeDir:planeDir,
+baseVisible:baseVisible,
+primaryAngle:primaryAngle,
+secondaryAngle:secondaryAngle,
+primarySignedAngle:getRotationCutSignedAngleRad(primaryAngle,state.dir),
+secondarySignedAngle:state.angle2On?getRotationCutSignedAngleRad(secondaryAngle,state.dir2):null,
+planeNormal:primary.planeNormal,
+clipNormal:primary.clipNormal,
+constant:primary.constant,
+planeDir:primary.planeDir,
+primary:primary,
+secondary:secondary,
+splitDir:splitDir,
 refPoint:refPoint,
 lineStart:lineStart,
 lineEnd:lineEnd,
@@ -11842,8 +13830,8 @@ if(!sc)return;
 if(!rotationCutLine){
 var lineGeo=new THREE.BufferGeometry();
 lineGeo.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0,0,0],3));
-rotationCutLine=new THREE.LineSegments(lineGeo,new THREE.LineBasicMaterial({color:0xFF7043,transparent:true,opacity:0.95,depthTest:false}));
-rotationCutLine.renderOrder=997;
+rotationCutLine=new THREE.LineSegments(lineGeo,new THREE.LineBasicMaterial({color:0xFF6D00,transparent:true,opacity:1,depthTest:false,depthWrite:false}));
+rotationCutLine.renderOrder=999;
 rotationCutLine.frustumCulled=false;
 sc.add(rotationCutLine);
 }
@@ -11857,18 +13845,29 @@ rotationCutPlaneEdges=new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),n
 rotationCutPlaneEdges.renderOrder=997;
 rotationCutPlaneEdges.frustumCulled=false;
 sc.add(rotationCutPlaneEdges);
+rotationCutPlaneMesh2=new THREE.Mesh(planeGeo,new THREE.MeshBasicMaterial({color:0x43A047,transparent:true,opacity:0.14,side:THREE.DoubleSide,depthWrite:false}));
+rotationCutPlaneMesh2.renderOrder=996;
+rotationCutPlaneMesh2.frustumCulled=false;
+sc.add(rotationCutPlaneMesh2);
+rotationCutPlaneEdges2=new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),new THREE.LineBasicMaterial({color:0x1B5E20,transparent:true,opacity:0.85,depthTest:false}));
+rotationCutPlaneEdges2.renderOrder=997;
+rotationCutPlaneEdges2.frustumCulled=false;
+sc.add(rotationCutPlaneEdges2);
 }
 }
-function setRotationCutVisualVisibility(show){
-if(rotationCutLine)rotationCutLine.visible=show;
-if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=show;
-if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=show;
+function setRotationCutVisualVisibility(showPrimary,showSecondary){
+var showLine=!!(showPrimary||showSecondary);
+if(rotationCutLine)rotationCutLine.visible=showLine;
+if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=!!showPrimary;
+if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=!!showPrimary;
+if(rotationCutPlaneMesh2)rotationCutPlaneMesh2.visible=!!showSecondary;
+if(rotationCutPlaneEdges2)rotationCutPlaneEdges2.visible=!!showSecondary;
 }
 function updateRotationCutVisuals(rotData){
 if(!sc)return;
 ensureRotationCutVisuals();
 if(!rotData||!rotData.enabled){
-setRotationCutVisualVisibility(false);
+setRotationCutVisualVisibility(false,false);
 return;
 }
 var lp=rotationCutLine.geometry.getAttribute('position');
@@ -11876,20 +13875,49 @@ lp.array[0]=rotData.lineStart.x;lp.array[1]=rotData.lineStart.y;lp.array[2]=rotD
 lp.array[3]=rotData.lineEnd.x;lp.array[4]=rotData.lineEnd.y;lp.array[5]=rotData.lineEnd.z;
 lp.needsUpdate=true;
 rotationCutLine.geometry.computeBoundingSphere();
-var basis=new THREE.Matrix4();
-basis.makeBasis(rotData.axisDir,rotData.planeDir,rotData.planeNormal);
-var quat=new THREE.Quaternion().setFromRotationMatrix(basis);
+if(rotationCutLine.material){
+rotationCutLine.material.color.setHex(0xFF6D00);
+rotationCutLine.material.opacity=1;
+rotationCutLine.material.depthTest=false;
+rotationCutLine.material.depthWrite=false;
+rotationCutLine.material.transparent=true;
+rotationCutLine.material.needsUpdate=true;
+}
+var show=!rotData.state.hidePlane;
+var basis1=new THREE.Matrix4();
+basis1.makeBasis(rotData.axisDir,rotData.primary.planeDir,rotData.primary.planeNormal);
+var quat1=new THREE.Quaternion().setFromRotationMatrix(basis1);
+rotationCutPlaneMesh.quaternion.copy(quat1);
+rotationCutPlaneEdges.quaternion.copy(quat1);
+if(rotData.state.angle2On&&rotData.secondary){
+var basis2=new THREE.Matrix4();
+basis2.makeBasis(rotData.axisDir,rotData.secondary.planeDir,rotData.secondary.planeNormal);
+var quat2=new THREE.Quaternion().setFromRotationMatrix(basis2);
+var halfSize=rotData.planeSize*0.5;
+rotationCutPlaneMesh.position.copy(rotData.refPoint).add(rotData.primary.planeDir.clone().multiplyScalar(rotData.planeSize*0.25));
+rotationCutPlaneMesh.scale.set(rotData.lineLength,halfSize,1);
+rotationCutPlaneEdges.position.copy(rotationCutPlaneMesh.position);
+rotationCutPlaneEdges.scale.set(rotData.lineLength,halfSize,1);
+rotationCutPlaneMesh2.position.copy(rotData.refPoint).add(rotData.secondary.planeDir.clone().multiplyScalar(-rotData.planeSize*0.25));
+rotationCutPlaneMesh2.quaternion.copy(quat2);
+rotationCutPlaneMesh2.scale.set(rotData.lineLength,halfSize,1);
+rotationCutPlaneEdges2.position.copy(rotationCutPlaneMesh2.position);
+rotationCutPlaneEdges2.quaternion.copy(quat2);
+rotationCutPlaneEdges2.scale.set(rotData.lineLength,halfSize,1);
+setRotationCutVisualVisibility(show,show);
+return;
+}
 rotationCutPlaneMesh.position.copy(rotData.refPoint);
-rotationCutPlaneMesh.quaternion.copy(quat);
 rotationCutPlaneMesh.scale.set(rotData.lineLength,rotData.planeSize,1);
 rotationCutPlaneEdges.position.copy(rotData.refPoint);
-rotationCutPlaneEdges.quaternion.copy(quat);
 rotationCutPlaneEdges.scale.set(rotData.lineLength,rotData.planeSize,1);
-setRotationCutVisualVisibility(true);
+setRotationCutVisualVisibility(show,false);
 }
 function scheduleCutMeshRebuild(){
 if(cutRebuildTimer)clearTimeout(cutRebuildTimer);
-cutRebuildTimer=setTimeout(function(){cutRebuildTimer=null;rebuildCutMesh();},250);
+var rotState=sanitizeRotationCutState(cutPlanes.rotation||{});
+var delay=(rotState.on&&rotState.angle2On)?90:250;
+cutRebuildTimer=setTimeout(function(){cutRebuildTimer=null;rebuildCutMesh();},delay);
 }
 function updateCutPlane(axis){
 var idx=axis==='x'?0:(axis==='y'?1:2);
@@ -11916,6 +13944,11 @@ applyCutClipping();
 updateValueWindowsForCut();
 scheduleCutMeshRebuild();
 }
+function updateRotationCutVisualState(){
+cutPlanes.rotation=readRotationCutStateFromUi();
+updateRotationCutUi(cutPlanes.rotation);
+updateRotationCutVisuals(getRotationCutData());
+}
 function resetRotationCutReference(){
 var refAEl=document.getElementById('rot-cut-ref-a');
 var refBEl=document.getElementById('rot-cut-ref-b');
@@ -11926,8 +13959,10 @@ updateRotationCut();
 function resetRotationCutAngle(){
 var angleEl=document.getElementById('rot-cut-angle');
 var dirEl=document.getElementById('rot-cut-dir');
+var angle2El=document.getElementById('rot-cut-angle2');
 if(angleEl)angleEl.value='0';
 if(dirEl)dirEl.value='+';
+if(angle2El)angle2El.value='0';
 updateRotationCut();
 }
 function computeClipPlane(axis){
@@ -11941,11 +13976,16 @@ function applyCutClipping(){
 ['x','y','z'].forEach(function(a){computeClipPlane(a);});
 activeClipPlanesArr=[];
 for(var i=0;i<3;i++){if(clipEnabled[i])activeClipPlanesArr.push(clipPlanesThree[i]);}
+updateAxisCutVisuals();
 var rotData=getRotationCutData();
 updateRotationCutVisuals(rotData);
 if(rotData&&rotData.enabled){
-rotationClipPlaneThree=new THREE.Plane(rotData.clipNormal.clone(),rotData.constant);
+rotationClipPlaneThree=new THREE.Plane(rotData.primary.clipNormal.clone(),rotData.primary.constant);
 activeClipPlanesArr.push(rotationClipPlaneThree);
+if(rotData.state&&rotData.state.angle2On&&rotData.secondary){
+rotationClipPlaneThree2=new THREE.Plane(rotData.secondary.clipNormal.clone(),rotData.secondary.constant);
+activeClipPlanesArr.push(rotationClipPlaneThree2);
+}
 }
 var cArr=activeClipPlanesArr.length>0?activeClipPlanesArr:[];
 if(ms&&ms.material)ms.material.clippingPlanes=cArr;
@@ -11962,6 +14002,7 @@ if(eg&&eg.material)eg.material.clippingPlanes=[];
 if(featureEg&&featureEg.material)featureEg.material.clippingPlanes=[];
 if(vrfGhostMs&&vrfGhostMs.material)vrfGhostMs.material.clippingPlanes=[];
 if(vrfGhostEg&&vrfGhostEg.material)vrfGhostEg.material.clippingPlanes=[];
+updateAxisCutVisuals();
 updateRotationCutVisuals(getRotationCutData());
 // Rebuild mesh with element-based filtering
 var drawColors=null;
@@ -11991,8 +14032,15 @@ document.getElementById('cut-'+axis+'-row').style.display='none';
 cutPlanes[axis]={on:false,pos:50,dir:'+'};
 });
 clipEnabled=[false,false,false];
-cutPlanes.rotation={on:false,axis:'x',angle:0,dir:'+',refA:50,refB:50};
+cutPlanes.rotation={on:false,axis:'x',angle:0,dir:'+',angle2On:false,angle2:0,dir2:'+',refA:50,refB:50,hidePlane:false};
+var hideAxisEl=document.getElementById('cut-hide-planes');
+if(hideAxisEl)hideAxisEl.checked=false;
 updateRotationCutUi(cutPlanes.rotation);
+var rotHideEl=document.getElementById('rot-cut-hide-plane');
+if(rotHideEl)rotHideEl.checked=false;
+var rotAngle2El=document.getElementById('rot-cut-angle2');
+if(rotAngle2El)rotAngle2El.value='0';
+updateAxisCutVisuals();
 updateRotationCutVisuals(null);
 activeClipPlanesArr=[];
 if(ms&&ms.material)ms.material.clippingPlanes=[];
@@ -12080,10 +14128,10 @@ var dx=p2[0]-p1[0],dy=p2[1]-p1[1],dz=p2[2]-p1[2];
 var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
 overlay.innerHTML='<b style="color:#ffeb3b">Distance Measurement</b>\\n'+
 'Node A: '+n1+'  Node B: '+n2+'\\n'+
-'\\u0394X = '+dx.toExponential(4)+'\\n'+
-'\\u0394Y = '+dy.toExponential(4)+'\\n'+
-'\\u0394Z = '+dz.toExponential(4)+'\\n'+
-'<b style="color:#4CAF50">Magnitude = '+mag.toExponential(4)+'</b>';
+'\\u0394X = '+formatLegendDrivenValue(dx,'N/A')+'\\n'+
+'\\u0394Y = '+formatLegendDrivenValue(dy,'N/A')+'\\n'+
+'\\u0394Z = '+formatLegendDrivenValue(dz,'N/A')+'\\n'+
+'<b style="color:#4CAF50">Magnitude = '+formatLegendDrivenValue(mag,'N/A')+'</b>';
 overlay.style.display='block';
 }else if(measMode==='angle'){
 var n1=measNodes[0],n2=measNodes[1],n3=measNodes[2];
@@ -12099,8 +14147,8 @@ var angleRad=Math.acos(cosA);
 var angleDeg=angleRad*180/Math.PI;
 overlay.innerHTML='<b style="color:#ffeb3b">Angle Measurement</b>\\n'+
 'Node A: '+n1+'  Node B (vertex): '+n2+'  Node C: '+n3+'\\n'+
-'<b style="color:#4CAF50">Angle at B = '+angleDeg.toFixed(2)+'\\u00B0</b>\\n'+
-'('+angleRad.toFixed(4)+' rad)';
+'<b style="color:#4CAF50">Angle at B = '+formatLegendDrivenValue(angleDeg,'N/A')+'\\u00B0</b>\\n'+
+'('+formatLegendDrivenValue(angleRad,'N/A')+' rad)';
 overlay.style.display='block';
 }
 }
@@ -12125,7 +14173,7 @@ updateMeasurement();
 }
 
 // ==================== SAVE / LOAD CONFIGURATION ====================
-function getConfigKey(){return 'T16_3D_'+HTMLNAME;}
+function getConfigKey(){return 'VMAP3D_'+HTMLNAME;}
 var cfgToastTimer=null;
 function showCfgToast(html,duration){
 var t=document.getElementById('cfg-toast');
@@ -12188,17 +14236,24 @@ cfg.legendCustomValues=cfgClone(legendCustomValues);
 cfg.legendCustomColors=cfgClone(legendCustomColors);
 cfg.scale=cs;
 cfg.currentVar=currentVar;
+cfg.displacementComponent=normalizeDisplacementComponent(displacementComponent);
 cfg.currentState=cst;
 cfg.cutX={on:document.getElementById('cut-x-on').checked,pos:document.getElementById('cut-x-pos').value,dir:document.getElementById('cut-x-dir').value};
 cfg.cutY={on:document.getElementById('cut-y-on').checked,pos:document.getElementById('cut-y-pos').value,dir:document.getElementById('cut-y-dir').value};
 cfg.cutZ={on:document.getElementById('cut-z-on').checked,pos:document.getElementById('cut-z-pos').value,dir:document.getElementById('cut-z-dir').value};
+cfg.cutHidePlanes=!!(document.getElementById('cut-hide-planes')&&document.getElementById('cut-hide-planes').checked);
+var rcState=sanitizeRotationCutState(cutPlanes.rotation||readRotationCutStateFromUi());
 cfg.rotationCut={
-on:document.getElementById('rot-cut-on').checked,
-axis:document.getElementById('rot-cut-axis').value,
-angle:document.getElementById('rot-cut-angle').value,
-dir:document.getElementById('rot-cut-dir').value,
-refA:document.getElementById('rot-cut-ref-a').value,
-refB:document.getElementById('rot-cut-ref-b').value
+on:rcState.on,
+axis:rcState.axis,
+angle:rcState.angle,
+dir:rcState.dir,
+angle2On:rcState.angle2On,
+angle2:rcState.angle2,
+dir2:rcState.dir2,
+refA:rcState.refA,
+refB:rcState.refB,
+hidePlane:rcState.hidePlane
 };
 cfg.measMode=document.getElementById('meas-mode').value;
 cfg.xyCurves=cfgClone(xyCurves);
@@ -12241,7 +14296,24 @@ cfg.dialogFontSize=dialogFontSize;
 cfg.tableFormFontSize=tableFormFontSize;
 var seenDialogIds={};
 cfg.dialogBoxes=dialogBoxes.map(function(b){
-return{id:b.id,x:b.x,y:b.y,w:b.w,h:b.h,text:(b.body?b.body.textContent:b.text)||'',nodeIdx:(b.nodeIdx!==undefined?b.nodeIdx:-1)};
+return{
+id:b.id,
+x:b.x,
+y:b.y,
+w:b.w,
+h:b.h,
+text:(b.body?(b.body.innerText||b.body.textContent):b.text)||'',
+richHtml:(b.body?(b.body.innerHTML||''):b.richHtml)||'',
+bodyClass:(b.body&&b.body.className)?b.body.className:'dialog-body',
+textStyle:cfgClone(ensureDialogTextStyle(b)),
+readOnly:!!b.readOnly,
+allowRichEdit:(b.allowRichEdit!==false),
+fontSizePx:getDialogFontSizePx(b),
+forecastDialogData:isForecastDialogBox(b)?cfgClone(b.forecastDialogData):null,
+forecastDialogFormat:isForecastDialogBox(b)?getForecastDialogFormat(b):null,
+forecastDialogDecimals:isForecastDialogBox(b)?getForecastDialogDecimals(b):null,
+nodeIdx:(b.nodeIdx!==undefined?b.nodeIdx:-1)
+};
 }).filter(function(b){
 var sid=(b.id!==undefined&&b.id!==null)?String(b.id):'';
 if(!sid)return true;
@@ -12278,6 +14350,9 @@ return html+'\\n'+tag;
 function loadRuntimeConfig(cfg){
 if(!cfg)return;
 var hasVar=false;
+if(cfg.displacementComponent!==undefined&&cfg.displacementComponent!==null){
+displacementComponent=normalizeDisplacementComponent(cfg.displacementComponent);
+}
 if(cfg.currentVar!==undefined&&cfg.currentVar!==null&&String(cfg.currentVar)!==''){
 var vName=String(cfg.currentVar);
 if(hasVarStateData(vName)){
@@ -12287,6 +14362,8 @@ hasVar=true;
 }else{
 console.warn('Runtime config: currentVar not found:',vName);
 }
+}else{
+refreshDisplacementComponentUi();
 }
 if(cfg.currentState!==undefined&&cfg.currentState!==null&&String(cfg.currentState)!==''){
 setTimeout(function(){
@@ -12438,7 +14515,6 @@ var s=makeDefaultXySheetState('Sheet '+(idx+1));
 if(!src||typeof src!=='object')return s;
 if(typeof src.title==='string'&&src.title.trim())s.title=src.title.trim();
 if(Array.isArray(src.curves))s.curves=cfgClone(src.curves);
-xyEnforcePhaseAngleSecondary(s.curves);
 if(Array.isArray(src.pinned))s.pinned=cfgClone(src.pinned);
 if(src.selectedIdx!==undefined){var si=parseInt(src.selectedIdx,10);s.selectedIdx=isFinite(si)?si:-1;}
 if(src.editingIdx!==undefined){var ei=parseInt(src.editingIdx,10);s.editingIdx=isFinite(ei)?ei:-1;}
@@ -12494,9 +14570,39 @@ b.id=sid;
 b.el.setAttribute('data-did',String(sid));
 if(sid>maxId)maxId=sid;
 }else if(b.id>maxId){maxId=b.id;}
+if(src.readOnly!==undefined)b.readOnly=!!src.readOnly;
+if(src.allowRichEdit!==undefined)b.allowRichEdit=!!src.allowRichEdit;
+if(src.fontSizePx!==undefined&&src.fontSizePx!==null&&String(src.fontSizePx)!==''){
+b.fontSizePx=Math.max(8,Math.min(36,cfgNumOr(src.fontSizePx,dialogFontSize)));
+}
 if(src.text!==undefined&&src.text!==null){
 b.text=String(src.text);
-if(b.body)b.body.textContent=b.text;
+}
+var bodyClass='dialog-body';
+if(src.bodyClass!==undefined&&src.bodyClass!==null&&String(src.bodyClass).trim()!==''){
+bodyClass=String(src.bodyClass).indexOf('dialog-body-rich')>=0?'dialog-body dialog-body-rich':'dialog-body';
+}
+if(src.richHtml!==undefined&&src.richHtml!==null&&String(src.richHtml)!==''){
+if(b.body){
+b.body.className=bodyClass;
+b.body.innerHTML=String(src.richHtml);
+}
+b.richHtml=String(src.richHtml);
+syncDialogTextSnapshot(b);
+}else if(b.body){
+b.body.className=bodyClass;
+b.body.textContent=b.text;
+b.richHtml=b.body.innerHTML||'';
+}
+if(src.textStyle&&typeof src.textStyle==='object'&&b.body&&(!src.richHtml||String(src.richHtml)==='')){
+var legacyStyle=[];
+if(src.textStyle.bold)legacyStyle.push('font-weight:700');
+if(src.textStyle.italic)legacyStyle.push('font-style:italic');
+if(src.textStyle.underline)legacyStyle.push('text-decoration:underline');
+legacyStyle.push('color:'+xyForecastSafeColor(src.textStyle.color,'#222222'));
+var escaped=String(b.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\n/g,'<br>');
+b.body.innerHTML='<span style="'+legacyStyle.join(';')+'">'+escaped+'</span>';
+b.richHtml=b.body.innerHTML||'';
 }
 if(src.nodeIdx!==undefined&&src.nodeIdx!==null){
 var ni=parseInt(src.nodeIdx,10);
@@ -12504,7 +14610,15 @@ b.nodeIdx=(isFinite(ni)&&ni>=0&&ni<ON.length)?ni:-1;
 }else{
 b.nodeIdx=-1;
 }
+if(src.forecastDialogData&&typeof src.forecastDialogData==='object'){
+b.forecastDialogData=cfgClone(src.forecastDialogData);
+if(src.forecastDialogFormat!==undefined&&src.forecastDialogFormat!==null)b.forecastDialogFormat=(String(src.forecastDialogFormat)==='exp')?'exp':'float';
+if(src.forecastDialogDecimals!==undefined&&src.forecastDialogDecimals!==null)b.forecastDialogDecimals=Math.max(0,Math.min(10,cfgNumOr(src.forecastDialogDecimals,6)));
+refreshForecastDialogBoxContent(b);
+}
 refreshDialogConnectButton(b);
+refreshDialogEditButton(b);
+applyDialogTextStyle(b);
 syncDialogBoxSize(b);
 b.x=cfgNumOr(src.x,b.x);
 b.y=cfgNumOr(src.y,b.y);
@@ -12535,7 +14649,13 @@ if(cfg.showAxes!==undefined){document.getElementById('ax').checked=cfg.showAxes;
 if(cfg.mouseInfo!==undefined){document.getElementById('mi').checked=cfg.mouseInfo;tgmi(cfg.mouseInfo);}
 if(cfg.showValues!==undefined){document.getElementById('sv').checked=cfg.showValues;tgv(cfg.showValues);}
 if(cfg.valueInfoFontSize!==undefined){var vf=document.getElementById('value-font-size');if(vf)vf.value=cfg.valueInfoFontSize;setValueInfoFontSize(cfg.valueInfoFontSize);}
-if(cfg.centroidMode!==undefined){document.getElementById('centroid-mode').checked=cfg.centroidMode;tgCentroid(cfg.centroidMode);}
+if(cfg.centroidMode!==undefined&&CENTROID_EXPORTED){
+document.getElementById('centroid-mode').checked=cfg.centroidMode;
+tgCentroid(cfg.centroidMode);
+}else if(!CENTROID_EXPORTED){
+document.getElementById('centroid-mode').checked=false;
+tgCentroid(false);
+}
 if(cfg.noContourGroupColors&&Array.isArray(cfg.noContourGroupColors)){
 noContourGroupColors=cfg.noContourGroupColors.map(function(v,i){
 var h=ncNormHex(v);
@@ -12588,13 +14708,20 @@ document.getElementById('cut-z-pos').value=cfg.cutZ.pos;
 document.getElementById('cut-z-dir').value=cfg.cutZ.dir;
 updateCutPlane('z');
 }
+if(cfg.cutHidePlanes!==undefined){
+document.getElementById('cut-hide-planes').checked=!!cfg.cutHidePlanes;
+updateAxisCutVisuals();
+}
 if(cfg.rotationCut){
 document.getElementById('rot-cut-on').checked=cfg.rotationCut.on;
 document.getElementById('rot-cut-axis').value=cfg.rotationCut.axis||'x';
 document.getElementById('rot-cut-angle').value=(cfg.rotationCut.angle!==undefined&&cfg.rotationCut.angle!==null)?cfg.rotationCut.angle:'0';
 document.getElementById('rot-cut-dir').value=(cfg.rotationCut.dir==='-')?'-':'+';
+if(document.getElementById('rot-cut-angle2'))document.getElementById('rot-cut-angle2').value=(cfg.rotationCut.angle2!==undefined&&cfg.rotationCut.angle2!==null)?cfg.rotationCut.angle2:document.getElementById('rot-cut-angle').value;
+if(document.getElementById('rot-cut-angle2-toggle'))document.getElementById('rot-cut-angle2-toggle').setAttribute('data-on',cfg.rotationCut.angle2On?'1':'0');
 document.getElementById('rot-cut-ref-a').value=(cfg.rotationCut.refA!==undefined&&cfg.rotationCut.refA!==null)?cfg.rotationCut.refA:'50';
 document.getElementById('rot-cut-ref-b').value=(cfg.rotationCut.refB!==undefined&&cfg.rotationCut.refB!==null)?cfg.rotationCut.refB:'50';
+document.getElementById('rot-cut-hide-plane').checked=!!cfg.rotationCut.hidePlane;
 updateRotationCut();
 }else{
 updateRotationCutUi(cutPlanes.rotation);
@@ -12702,12 +14829,13 @@ setHideAllConnected(cfgHideAll);
 document.getElementById('hide-elem-on').checked=cfgHideMode;
 tgHideElements(cfgHideMode);
 refreshAfterHideElementsChange();
+refreshDisplacementComponentUi();
 drawPlot();
 updateDialogBoxesVisuals();
 document.getElementById('st').textContent='Configuration loaded successfully!';
 }catch(e){
 console.error('Error applying config:',e);
-try{cst=null;cn=cloneNodes(ON);cm(getRenderNodes(),null);uc();}catch(_){}
+try{cst=null;cn=ON.slice();cm(getRenderNodes(),null);uc();}catch(_){}
 document.getElementById('st').textContent='Error applying config: '+e.message;
 }
 }
@@ -12722,11 +14850,12 @@ console.log('[T16] Output vars='+Object.keys(OUT_STATE_INDEX).join(','));
 console.log('[T16] State node payloads='+Object.keys(STATE_NODE_TAG_MAP).length);
 console.log('[T16] Loaded states for currentVar='+Object.keys(AD).length+' VAR_LOCS='+JSON.stringify(VAR_LOCS));
 if(ON.length===0){throw new Error('No nodes (ON is empty)');}
-var faceCountNow=(Array.isArray(F)?F.length:getFullFaces().length);
 if(BF.length===0&&faceCountNow===0){throw new Error('No faces available (BF/F are empty)');}
 if(BF.length===0&&faceCountNow>0){console.warn('[T16] Boundary faces empty - using full faces fallback');}
-if(typeof THREE==='undefined'){
-try{pss();ugrl();xyRenderSheetTabs();}catch(_){}
+if(THREE_MISSING){
+try{pss();}catch(_){try{pssFallback();}catch(__){}}
+try{ugrl();}catch(_){}
+try{xyRenderSheetTabs();}catch(_){}
 throw new Error('Three.js not loaded - check internet connection');
 }
 document.getElementById('st').textContent='Initializing 3D viewer...';
@@ -12778,6 +14907,10 @@ class App:
         self.export_centroid_var = tk.BooleanVar(value=False)
         self.export_all_edges_var = tk.BooleanVar(value=False)
         self.output_summary_text = "Select .t16/.t19 file first"
+        self._default_window_height = 725
+        self._output_listbox_base_rows = 6
+        self._output_listbox_current_rows = self._output_listbox_base_rows
+        self._output_resize_after_id = None
         
         self.setup()
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -12821,6 +14954,53 @@ class App:
             self.mode_static_rb.config(state=state)
         if hasattr(self, 'mode_harmonic_rb') and self.mode_harmonic_rb:
             self.mode_harmonic_rb.config(state=state)
+
+    def _schedule_output_list_resize(self):
+        if self._output_resize_after_id is not None:
+            try:
+                self.root.after_cancel(self._output_resize_after_id)
+            except:
+                pass
+        self._output_resize_after_id = self.root.after(30, self._apply_output_list_resize)
+
+    def _sync_main_canvas_window_size(self, target_width=None):
+        if not hasattr(self, '_main_canvas') or not self._main_canvas:
+            return
+        if not hasattr(self, '_main_canvas_window') or self._main_canvas_window is None:
+            return
+        if not hasattr(self, '_main_content_frame') or not self._main_content_frame:
+            return
+        try:
+            canvas = self._main_canvas
+            frame = self._main_content_frame
+            width = max(1, int(target_width if target_width is not None else canvas.winfo_width()))
+            canvas_h = max(1, int(canvas.winfo_height()))
+            req_h = max(1, int(frame.winfo_reqheight()))
+            target_h = max(canvas_h, req_h)
+            canvas.itemconfig(self._main_canvas_window, width=width, height=target_h)
+            canvas.configure(scrollregion=(0, 0, width, target_h))
+        except:
+            pass
+
+    def _apply_output_list_resize(self):
+        self._output_resize_after_id = None
+        if not hasattr(self, 'output_listbox') or not self.output_listbox:
+            return
+        try:
+            current_height = max(1, int(self.root.winfo_height()))
+        except:
+            return
+        base_height = max(1, int(self._default_window_height))
+        base_rows = max(1, int(self._output_listbox_base_rows))
+        target_rows = max(base_rows, int(round(float(base_rows) * float(current_height) / float(base_height))))
+        if target_rows != self._output_listbox_current_rows:
+            self.output_listbox.config(height=target_rows)
+            self._output_listbox_current_rows = target_rows
+        self._sync_main_canvas_window_size()
+
+    def _on_root_resize(self, event):
+        if event.widget is self.root:
+            self._schedule_output_list_resize()
     
     def on_closing(self):
         self._close_reader()
@@ -12856,15 +15036,18 @@ class App:
         # Inner frame for all content
         mf = tk.Frame(main_canvas)
         canvas_window = main_canvas.create_window((0, 0), window=mf, anchor='nw')
+        self._main_canvas = main_canvas
+        self._main_canvas_window = canvas_window
+        self._main_content_frame = mf
         
         # Make inner frame width follow canvas width
         def on_canvas_configure(event):
-            main_canvas.itemconfig(canvas_window, width=event.width)
+            self._sync_main_canvas_window_size(target_width=event.width)
         main_canvas.bind('<Configure>', on_canvas_configure)
         
         # Update scroll region when content changes
         def on_frame_configure(event):
-            main_canvas.configure(scrollregion=main_canvas.bbox('all'))
+            self._sync_main_canvas_window_size()
         mf.bind('<Configure>', on_frame_configure)
         
         # Mouse wheel scrolling (Windows + Linux)
@@ -12877,7 +15060,7 @@ class App:
         main_canvas.bind_all('<MouseWheel>', on_mousewheel)
         main_canvas.bind_all('<Button-4>', on_mousewheel_linux_up)
         main_canvas.bind_all('<Button-5>', on_mousewheel_linux_down)
-        self._main_canvas = main_canvas
+        self.root.bind('<Configure>', self._on_root_resize, add='+')
         
         # STEP 1: File Selection - LabelFrame
         step1 = tk.LabelFrame(mf, text="Step 1: Select T16/T19 File",
@@ -12947,7 +15130,7 @@ class App:
         scrollbar = tk.Scrollbar(lf)
         scrollbar.pack(side='right', fill='y')
         
-        self.output_listbox = tk.Listbox(lf, height=6, font=('Courier', 9),
+        self.output_listbox = tk.Listbox(lf, height=self._output_listbox_base_rows, font=('Courier', 9),
                                           yscrollcommand=scrollbar.set,
                                           selectmode='single', bg='#f5f5f5',
                                           relief='sunken', bd=1)
@@ -12955,6 +15138,7 @@ class App:
         scrollbar.config(command=self.output_listbox.yview)
         
         self.output_listbox.bind('<<ListboxSelect>>', self.on_output_selected)
+        self.root.after_idle(self._apply_output_list_resize)
         
         # STEP 4: Generate - LabelFrame
         step4 = tk.LabelFrame(mf, text="Step 4: Generate 3D Viewer",
@@ -12987,8 +15171,8 @@ class App:
         
         # Bottom bar: Exit button + watermark
         bottom_frame = tk.Frame(mf)
-        bottom_frame.pack(fill='x', pady=(5, 0))
-        
+        bottom_frame.pack(fill='x', padx=8, pady=(8, 4))
+
         tk.Button(bottom_frame, text="Exit", command=self.on_closing,
                   font=('Arial', 10, 'bold'), bg='#666', fg='white',
                   width=10, height=1).pack(side='right')
@@ -13349,3 +15533,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
