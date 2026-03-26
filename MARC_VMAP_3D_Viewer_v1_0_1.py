@@ -43,7 +43,7 @@ GUIDELINE_PATH = r"\\frafil002\VC_FEA\VC-Marc_Post\Marc_Tools_Guideline\Marc_VMA
 LOGO_SVG_PATH = r"\\frafil002\VC_FEA\VC-Marc_Post\Marc_Python\Canvas\Vibracoustic.svg"
 VIBRA_SVG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VIBRA.svg")
 JSON_SCRIPT_CHUNK_SIZE = 200000
-CACHE_SCHEMA_VERSION = "vmap_3d_viewer_cache_2026_03_09_freqfix2"
+CACHE_SCHEMA_VERSION = "vmap_3d_viewer_cache_2026_03_25_dispvec1"
 
 def make_chunked_json_script(base_id, json_text, chunk_size=JSON_SCRIPT_CHUNK_SIZE):
     if not isinstance(json_text, str):
@@ -959,21 +959,30 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     all_var_info = reader.get_available_variables()
     all_available_outputs = sorted(all_var_info.keys())
     
+    virtual_displacement_output = False
     if harmonic_mode:
         if 'Displacement' not in all_available_outputs:
             raise ValueError("Harmonic mode requires 'Displacement' output in VMAP file.")
-        available_outputs = ['Displacement']
+        export_outputs = ['Displacement']
+        viewer_outputs = ['Displacement']
         default_var = 'Displacement'
     elif selected_output and selected_output in all_available_outputs:
         # Export selected output only. Deformation nodes are exported separately by state.
-        available_outputs = [selected_output]
+        export_outputs = [selected_output]
+        viewer_outputs = [selected_output]
         default_var = selected_output
+        if selected_output != 'Displacement' and 'Displacement' in all_available_outputs:
+            viewer_outputs.append('Displacement')
+            virtual_displacement_output = True
     else:
-        available_outputs = all_available_outputs
-        default_var = 'Displacement' if 'Displacement' in available_outputs else (available_outputs[0] if available_outputs else None)
+        export_outputs = all_available_outputs
+        viewer_outputs = list(all_available_outputs)
+        default_var = 'Displacement' if 'Displacement' in viewer_outputs else (viewer_outputs[0] if viewer_outputs else None)
     
     # Detect native data locations (element vs node) for each variable
     var_locations = reader.get_variable_locations()
+    if 'Displacement' in viewer_outputs and 'Displacement' not in var_locations:
+        var_locations['Displacement'] = 'node'
     state_names = sorted(reader.states.keys(), key=natural_sort_key)
     src_size = 0
     src_mtime = 0.0
@@ -989,7 +998,7 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
         "source_mtime": src_mtime,
         "viewer_mode": mode,
         "export_centroid": bool(export_centroid),
-        "outputs": list(available_outputs),
+        "outputs": list(export_outputs),
         "states": list(state_names),
     }
     cache_path = build_export_cache_path(base)
@@ -1039,24 +1048,26 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
             var_keys = list(st.get('variables', {}).keys())
             state_var_keys[sn] = var_keys
 
-            # Node positions always come from displacement (or fallback to original mesh if missing)
+            # Export relative displacement vectors per state. This avoids precision loss
+            # when reconstructing displacement magnitudes from large absolute coordinates.
             state_nodes = reader.get_nodes(sn, 1.0, 'Displacement')
             if state_nodes is not None:
-                state_nodes = np.nan_to_num(state_nodes, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+                state_nodes = np.nan_to_num(state_nodes, nan=0.0, posinf=0.0, neginf=0.0)
                 try:
-                    disp_vec = state_nodes - original_nodes
+                    disp_vec = np.nan_to_num(state_nodes - original_nodes, nan=0.0, posinf=0.0, neginf=0.0)
                     disp_mag = np.linalg.norm(disp_vec, axis=1)
                     disp_max = float(np.nanmax(disp_mag)) if disp_mag.size else 0.0
                     if not np.isfinite(disp_max):
                         disp_max = 0.0
                 except Exception:
+                    disp_vec = None
                     disp_max = 0.0
                 disp_max_by_state[sn] = disp_max
-                b64_nodes = pack_float32_b64(state_nodes)
-                if b64_nodes:
+                b64_disp = pack_float32_b64(disp_vec) if disp_vec is not None else None
+                if b64_disp:
                     disp_nodes_by_state[sn] = {
-                        "f32_b64": b64_nodes,
-                        "n_nodes": int(state_nodes.shape[0])
+                        "disp_f32_b64": b64_disp,
+                        "n_nodes": int(disp_vec.shape[0])
                     }
                 else:
                     disp_nodes_by_state[sn] = None
@@ -1064,13 +1075,13 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
                 disp_max_by_state[sn] = 0.0
                 disp_nodes_by_state[sn] = None
 
-        update_progress(25, "Processing {} output(s)...".format(len(available_outputs)))
+        update_progress(25, "Processing {} output(s)...".format(len(export_outputs)))
 
         # Build separate dataset for EACH output variable
         # CRITICAL: Node positions ALWAYS use 'Displacement' variable
         all_outputs_data = {}
-        for idx, var_name in enumerate(available_outputs):
-            percent = 25 + (35 * idx / max(1, len(available_outputs)))
+        for idx, var_name in enumerate(export_outputs):
+            percent = 25 + (35 * idx / max(1, len(export_outputs)))
             update_progress(percent, "Processing: {} ...".format(var_name))
 
             output_states = {}
@@ -1171,7 +1182,7 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     output_state_index = {}
     output_state_tag_map = {}
     output_state_scripts = []
-    for var_name in available_outputs:
+    for var_name in export_outputs:
         states_for_var = all_outputs_data.get(var_name, {})
         sid_list = []
         tag_map = {}
@@ -1487,6 +1498,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#efefef;color:#333;overf
 .bt-orange{background:#FF6D00}.bt-orange:hover{background:#E65100}
 .bt-yellow{background:#FFD54F;color:#333}.bt-yellow:hover{background:#FBC02D}
 .ck{display:flex;align-items:center;margin:6px 0;font-size:11px;color:#444}
+.disp-opt-sec{font-size:11px;font-weight:bold;color:#555;margin:18px 0 8px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px}
+.disp-opt-sec-first{margin-top:6px}
 .ck input{margin-right:8px;accent-color:#2196F3}
 select{width:100%;padding:8px;background:#fff;border:1px solid #ccc;color:#333;border-radius:4px;font-size:11px;margin:6px 0}
 select:focus{outline:none;border-color:#2196F3}
@@ -1521,11 +1534,13 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 #dialog-box-container{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:191;overflow:hidden}
 .dialog-box{position:absolute;pointer-events:auto;display:inline-block;max-width:340px;min-width:90px;background:rgba(255,255,255,0.95);color:#222;border:1px solid rgba(0,0,0,0.24);border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.35);font-size:11px;line-height:1.35;transition:border-color .15s,box-shadow .15s}
 .dialog-box.active{border-color:#1976D2;box-shadow:0 0 0 2px rgba(25,118,210,0.22),0 2px 10px rgba(0,0,0,0.35)}
+.dialog-box.editing{border-color:#FDD835;box-shadow:0 0 0 2px rgba(253,216,53,0.28),0 2px 10px rgba(0,0,0,0.35)}
 .dialog-tools{display:none;align-items:center;justify-content:flex-end;gap:4px;height:18px;padding:2px 4px 0 4px;cursor:move}
 .dialog-box.active .dialog-tools,.dialog-box.editing .dialog-tools{display:flex}
 .dialog-btn{width:16px;height:16px;border:none;border-radius:3px;font-size:10px;line-height:16px;text-align:center;color:#fff;cursor:pointer;padding:0}
 .dialog-btn-del{background:#D32F2F}
 .dialog-btn-link{background:#1976D2}
+.dialog-btn-copy{background:#00897B;width:auto;min-width:30px;padding:0 4px;font-size:8px;font-weight:700}
 .dialog-btn-font{background:#FB8C00}
 .dialog-btn-edit{background:#8E24AA}
 .dialog-btn-link.dialog-btn-disconnect{background:#616161}
@@ -1537,7 +1552,8 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .dialog-body-rich .dlg-rich-row+.dlg-rich-row{margin-top:5px}
 .dialog-body-rich .dlg-rich-tag{display:inline-block;min-width:86px;padding:2px 7px;border-radius:999px;background:var(--dlg-accent,#6A1B9A);color:#fff;font-weight:700;font-size:0.92em;margin-right:6px}
 .dialog-body-rich .dlg-rich-val{font-weight:600;color:#222}
-.dialog-box.editing .dialog-body{cursor:text;border-top:1px solid rgba(0,0,0,0.14)}
+.dialog-body-rich .dlg-rich-result{display:inline-block;padding:2px 8px;border-radius:6px;background:#FFF8E1;border:1px solid rgba(0,0,0,0.18);color:#000;font-weight:900}
+.dialog-box.editing .dialog-body{cursor:text;border-top:1px solid rgba(253,216,53,0.58)}
 .dialog-edit-popup{position:fixed;display:none;min-width:190px;background:rgba(255,255,255,0.98);border:2px solid #8E24AA;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);padding:10px 12px;z-index:194}
 .dialog-edit-popup .dep-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:11px;font-weight:800;color:#6A1B9A}
 .dialog-edit-popup .dep-close{background:#F44336;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:700;padding:1px 7px;cursor:pointer}
@@ -1546,7 +1562,7 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .dialog-edit-popup .dep-btn{min-width:30px;padding:4px 6px;border:1px solid #bbb;border-radius:4px;background:linear-gradient(#fff,#eee);cursor:pointer;font-size:10px;font-weight:700;color:#333}
 .dialog-edit-popup .dep-btn.on{background:linear-gradient(#AB47BC,#8E24AA);border-color:#6A1B9A;color:#fff}
 .dialog-edit-popup input[type="color"]{width:38px;height:24px;padding:0;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer}
-.dialog-font-popup{position:fixed;display:none;min-width:200px;background:rgba(255,255,255,0.98);border:2px solid #FB8C00;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);padding:10px 12px;z-index:194}
+.dialog-font-popup{position:fixed;display:none;width:220px;max-width:calc(100vw - 20px);box-sizing:border-box;background:rgba(255,255,255,0.98);border:2px solid #FB8C00;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);padding:10px 12px;z-index:194}
 .dialog-font-popup .dfp-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:11px;font-weight:800;color:#E65100}
 .dialog-font-popup .dfp-close{background:#F44336;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:700;padding:1px 7px;cursor:pointer}
 .dialog-font-popup .dfp-row{display:flex;align-items:center;gap:8px}
@@ -1712,6 +1728,7 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .xy-result-block-title{font-size:11px;font-weight:800;margin-bottom:6px}
 .xy-result-row+.xy-result-row{margin-top:5px}
 .xy-result-chip{display:inline-block;min-width:86px;padding:2px 7px;border-radius:999px;font-size:9px;font-weight:800;margin-right:6px}
+.xy-result-value-highlight{display:inline-block;padding:2px 8px;border-radius:6px;background:#FFF8E1;border:1px solid rgba(0,0,0,0.18);color:#000;font-weight:900}
 /* XY Sheet Tabs */
 #xy-sheet-bar{display:flex;align-items:center;background:#1976D2;flex-shrink:0;min-height:28px;overflow-x:auto;padding:0 4px}
 .xy-sheet-tab{font-size:10px;font-weight:600;padding:5px 12px;cursor:pointer;color:rgba(255,255,255,0.7);border:none;background:transparent;white-space:nowrap;border-bottom:2px solid transparent;transition:all .2s}
@@ -1807,7 +1824,7 @@ Scroll Wheel: Zoom
 </div>
 <div class="p"><div class="pt">Output Available</div>
 <select id="vs" onchange="ovs()">''' + ''.join(['<option value="{0}"{1}>{0}</option>'.format(
-    v, ' selected' if v == default_var else '') for v in available_outputs]) + '''</select>
+    v, ' selected' if v == default_var else '') for v in viewer_outputs]) + '''</select>
 <div class="ck" style="margin-top:4px"><input type="checkbox" id="centroid-mode" onchange="tgCentroid(this.checked)"><label>Element Centroid</label><span style="font-size:8px;color:#999;margin-left:4px" id="centroid-info">''' + ('(linear extrapolation from IPs)' if var_locations.get(default_var, 'node') == 'element' else '(extrapolated nodal values)') + '''</span></div>
 </div>
 <div class="p"><div class="pt">Increment Selection</div>
@@ -1815,17 +1832,17 @@ Scroll Wheel: Zoom
 </div>
 ''' + animation_panel_html + '''
 <div class="p"><div class="pt">Display Options</div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:2px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Mesh</div>
+<div class="disp-opt-sec disp-opt-sec-first">Mesh</div>
 <div class="ck"><label style="font-size:11px;color:#444">Edges:</label><select id="ed" onchange="tgeMode(this.value)" style="margin-left:6px;font-size:10px;padding:2px 4px;border:1px solid #ccc;border-radius:3px"><option value="feature" selected>Feature Edges</option><option value="none">No Edges</option>''' + all_edges_option_html + '''</select></div>
 <div class="ck"><input type="checkbox" id="wf" onchange="tgw(this.checked)"><label>Wireframe Mode</label></div>
 <div class="ck"><input type="checkbox" id="um" onchange="tgu(this.checked)"><label>Undeformed Mesh</label></div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:8px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">View</div>
-<div class="ck"><input type="checkbox" id="persp" checked onchange="tgp(this.checked)"><label>Perspective View</label></div>
+<div class="disp-opt-sec">View</div>
+<div class="ck"><input type="checkbox" id="persp" onchange="tgp(this.checked)"><label>Perspective View</label></div>
 <div class="ck"><input type="checkbox" id="ar" onchange="tgr(this.checked)"><label>Auto Rotate</label></div>
 <div class="ck"><input type="checkbox" id="ax" checked onchange="tga(this.checked)"><label>Show Axes</label></div>
 <div class="ck"><input type="checkbox" id="mi" checked onchange="tgmi(this.checked)"><label>Mouse Info</label></div>
 <div class="ck"><label style="font-size:11px;color:#444">Background:</label><input type="color" id="bg-color" value="#efefef" onchange="setBgColor(this.value)" style="margin-left:6px;width:32px;height:20px;border:1px solid #ccc;border-radius:3px;cursor:pointer;vertical-align:middle"></div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:8px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Value Range Filter</div>
+<div class="disp-opt-sec">Value Range Filter</div>
 <div class="ck"><input type="checkbox" id="vrf-on" onchange="tgVRF(this.checked)"><label>Enable Range Filter</label></div>
 <div id="vrf-controls" style="display:none;margin:4px 0">
 <div style="position:relative;height:22px;margin:8px 6px 4px 6px">
@@ -1843,7 +1860,7 @@ Scroll Wheel: Zoom
 <span>Hi: <span id="vrf-hi-val">1.00e+0</span></span>
 </div>
 </div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:8px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Data</div>
+<div class="disp-opt-sec">Data</div>
 <div class="ck"><input type="checkbox" id="sv" onchange="tgv(this.checked)"><label>Values</label><button class="bt bt2" onclick="clearValuePinsAndTable()" style="margin-left:8px;font-size:9px;padding:1px 8px">Clear</button></div>
 <div id="value-font-row" style="display:flex;align-items:center;gap:6px;margin:2px 0 4px 22px">
 <span style="font-size:10px;color:#555;font-weight:600">Font</span>
@@ -1872,7 +1889,7 @@ Scroll Wheel: Zoom
 <span id="table-form-font-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:14px;text-align:right">10</span>
 </div>
 <div class="ck"><label style="font-size:11px;color:#444">Measure:</label><select id="meas-mode" onchange="setMeasMode(this.value)" style="margin-left:6px;font-size:10px;padding:2px 4px;border:1px solid #ccc;border-radius:3px"><option value="off" selected>Off</option><option value="distance">Distance</option><option value="angle">Angle</option></select><button class="bt bt2" onclick="clearMeas()" style="margin-left:4px;font-size:9px;padding:1px 6px">Clear</button></div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:8px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Text</div>
+<div class="disp-opt-sec">Text</div>
 <div class="ck">
 <input type="checkbox" id="dlg-on" onchange="tgDialogMode(this.checked)">
 <label>Dialog Box</label>
@@ -1890,7 +1907,7 @@ Scroll Wheel: Zoom
 </div>
 </div>
 <div class="p"><div class="pt">View Manager</div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:2px 0 6px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Cut View</div>
+<div class="disp-opt-sec disp-opt-sec-first">Cut View</div>
 <div style="font-size:10px;color:#666;margin-bottom:6px">Cut the mesh along X, Y, or Z planes to reveal interior elements.</div>
 <div class="ck"><input type="checkbox" id="cut-x-on" onchange="updateCutPlane('x')"><label>Enable X Cut</label></div>
 <div class="range-row" id="cut-x-row" style="display:none"><span>X pos:</span><input type="range" id="cut-x-pos" min="0" max="100" value="50" step="1" oninput="updateCutPlane('x')"><span class="rv" id="cut-x-val">50%</span>
@@ -1902,7 +1919,7 @@ Scroll Wheel: Zoom
 <div class="range-row" id="cut-z-row" style="display:none"><span>Z pos:</span><input type="range" id="cut-z-pos" min="0" max="100" value="50" step="1" oninput="updateCutPlane('z')"><span class="rv" id="cut-z-val">50%</span>
 <select id="cut-z-dir" onchange="updateCutPlane('z')" style="width:40px;font-size:9px;padding:1px"><option value="+">+</option><option value="-">-</option></select></div>
 <div class="ck" style="margin-top:3px"><input type="checkbox" id="cut-hide-planes" onchange="updateAxisCutVisuals()"><label>Hide planes</label></div>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:10px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Rotation Cut</div>
+<div class="disp-opt-sec">Rotation Cut</div>
 <div style="font-size:10px;color:#666;margin-bottom:6px">Rotate a cut plane around a global X, Y, or Z reference line.</div>
 <div class="ck"><input type="checkbox" id="rot-cut-on" onchange="updateRotationCut()"><label>Enable Rotation Cut</label></div>
 <div id="rot-cut-controls" style="display:none;margin:4px 0 2px 0">
@@ -1915,8 +1932,8 @@ Scroll Wheel: Zoom
 <div class="ck" style="margin-top:3px"><input type="checkbox" id="rot-cut-hide-plane" onchange="updateRotationCutVisualState()"><label>Hide plane</label></div>
 <div style="display:flex;gap:4px;margin-top:4px"><button class="bt bt2" onclick="resetRotationCutReference()" style="font-size:9px;padding:1px 8px;flex:1">Center Ref</button><button class="bt bt2" onclick="resetRotationCutAngle()" style="font-size:9px;padding:1px 8px;flex:1">Zero Angle</button></div>
 </div>
-<button class="bt bt2" onclick="resetCutPlanes()" style="margin-top:6px;font-size:10px">Reset All Cuts</button>
-<div style="font-size:11px;font-weight:bold;color:#555;margin:10px 0 4px 0;border-bottom:1px solid #e0e0e0;padding-bottom:2px">Hide Elements</div>
+<button class="bt bt2" id="rot-cut-reset-all-btn" onclick="resetCutPlanes()" style="display:none;margin-top:6px;font-size:10px">Reset All Cuts</button>
+<div class="disp-opt-sec">Hide Elements</div>
 <div class="ck"><input type="checkbox" id="hide-elem-on" onchange="tgHideElements(this.checked)"><label>Hide Elements</label></div>
 <div id="hide-elem-actions">
 <div style="display:flex;align-items:center;gap:6px">
@@ -1999,7 +2016,8 @@ Scroll Wheel: Zoom
 <button class="xy-btn xy-btn-font" id="xy-font-btn" onclick="xyToggleFontPopup()" title="XY preferences">Preferences</button>
 <button class="xy-btn" id="xy-anim-info-btn" onclick="xyToggleAnimInfo()" style="display:none;background:#D32F2F;color:#fff;border-color:#B71C1C">Hide Info.</button></div>
 </div>
-<div style="font-size:10px;font-weight:bold;color:#2196F3;cursor:pointer;margin:6px 0 2px 0;user-select:none" id="xy-hdr-curves" onclick="xyToggleSection('xy-sec-curves','xy-hdr-curves')">[+] CURVES</div>
+<div class="xy-edit-divider" style="margin:10px 0 8px 0"></div>
+<div style="font-size:10px;font-weight:bold;color:#2196F3;cursor:pointer;margin:14px 0 2px 0;user-select:none" id="xy-hdr-curves" onclick="xyToggleSection('xy-sec-curves','xy-hdr-curves')">[+] CURVES</div>
 <div id="xy-sec-curves" style="display:none">
 <div id="xy-curve-list"></div>
 <div id="xy-table-area">
@@ -2194,47 +2212,234 @@ const CR=''' + json.dumps(color_range, separators=(',', ':')) + ''';
 const SL=parseCoreData('SL',[]);
 const STATE_NODE_TAG_MAP=''' + state_nodes_tag_map_json + ''';
 const STATE_NODE_CACHE={};
+const STATE_DISP_CACHE={};
+const STATE_NODE_PAYLOAD_CACHE={};
 const OUT_STATE_INDEX=''' + output_state_index_json + ''';
 const OUT_STATE_TAG_MAP=''' + output_state_tag_map_json + ''';
 const OUT_STATE_CACHE={};
 const VAR_LOCS=''' + json.dumps(var_locations, separators=(',', ':')) + ''';
-function getStateNodes(sid){
+const VIRTUAL_DISPLACEMENT_OUTPUT=''' + ('true' if virtual_displacement_output else 'false') + ''';
+function getStateNodePayload(sid){
 if(!sid)return null;
-if(STATE_NODE_CACHE[sid])return STATE_NODE_CACHE[sid];
+if(Object.prototype.hasOwnProperty.call(STATE_NODE_PAYLOAD_CACHE,sid))return STATE_NODE_PAYLOAD_CACHE[sid];
 var tagInfo=STATE_NODE_TAG_MAP[sid];
 if(!tagInfo)return null;
 var txt=readChunkedJsonTag(tagInfo);
 if(!txt)return null;
 try{
 var parsed=JSON.parse(txt);
-if(parsed&&parsed.f32_b64!==undefined){
-parsed=decodeNodesF32B64(parsed.f32_b64,parsed.n_nodes);
-}
-STATE_NODE_CACHE[sid]=parsed;
+STATE_NODE_PAYLOAD_CACHE[sid]=parsed;
 return parsed;
 }catch(e){
 console.error('State node parse failed for '+sid+':',e);
 return null;
 }
 }
+function buildAbsoluteNodesFromDisp(disp){
+var nn=ON.length||0;
+var out=new Array(nn);
+for(var i=0;i<nn;i++){
+var o=ON[i]||[0,0,0];
+var d=(disp&&disp[i])?disp[i]:[0,0,0];
+var dx=Number(d[0]);if(!isFinite(dx))dx=0;
+var dy=Number(d[1]);if(!isFinite(dy))dy=0;
+var dz=Number(d[2]);if(!isFinite(dz))dz=0;
+out[i]=[Number(o[0])+dx,Number(o[1])+dy,Number(o[2])+dz];
+}
+return out;
+}
+function getStateDisplacements(sid){
+if(!sid)return null;
+if(Object.prototype.hasOwnProperty.call(STATE_DISP_CACHE,sid))return STATE_DISP_CACHE[sid];
+var payload=getStateNodePayload(sid);
+if(!payload)return null;
+var disp=null;
+if(payload&&payload.disp_f32_b64!==undefined){
+disp=decodeNodesF32B64(payload.disp_f32_b64,payload.n_nodes);
+}else if(payload&&payload.f32_b64!==undefined){
+var absNodes=decodeNodesF32B64(payload.f32_b64,payload.n_nodes);
+if(absNodes){
+disp=new Array(ON.length);
+for(var i=0;i<ON.length;i++){
+var o=ON[i]||[0,0,0];
+var n=absNodes[i]||o;
+disp[i]=[Number(n[0])-Number(o[0]),Number(n[1])-Number(o[1]),Number(n[2])-Number(o[2])];
+}
+if(!Object.prototype.hasOwnProperty.call(STATE_NODE_CACHE,sid))STATE_NODE_CACHE[sid]=absNodes;
+}
+}
+STATE_DISP_CACHE[sid]=disp;
+return disp;
+}
+function getStateNodes(sid){
+if(!sid)return null;
+if(Object.prototype.hasOwnProperty.call(STATE_NODE_CACHE,sid))return STATE_NODE_CACHE[sid];
+var payload=getStateNodePayload(sid);
+if(!payload)return null;
+var parsed=null;
+if(payload&&payload.disp_f32_b64!==undefined){
+var disp=getStateDisplacements(sid);
+if(disp)parsed=buildAbsoluteNodesFromDisp(disp);
+}else if(payload&&payload.f32_b64!==undefined){
+parsed=decodeNodesF32B64(payload.f32_b64,payload.n_nodes);
+}
+STATE_NODE_CACHE[sid]=parsed;
+return parsed;
+}
 function ensureVarStateCache(v){
 if(!v)return {};
 if(!OUT_STATE_CACHE[v])OUT_STATE_CACHE[v]={};
 return OUT_STATE_CACHE[v];
 }
+function isVirtualDisplacementVar(v){
+return !!(VIRTUAL_DISPLACEMENT_OUTPUT&&v==='Displacement'&&(!OUT_STATE_INDEX||!OUT_STATE_INDEX[v]||OUT_STATE_INDEX[v].length===0));
+}
+function getVarStateIds(v){
+if(isVirtualDisplacementVar(v)){
+var ids=[];
+for(var i=0;i<SL.length;i++){
+var s=SL[i];
+if(!s||s.id===undefined||s.id===null)continue;
+if(!STATE_NODE_TAG_MAP||!STATE_NODE_TAG_MAP[s.id])continue;
+ids.push(s.id);
+}
+return ids;
+}
+if(!v||!OUT_STATE_INDEX||!OUT_STATE_INDEX[v])return [];
+return OUT_STATE_INDEX[v];
+}
+function getStateMetaEntry(sid){
+if(sid===undefined||sid===null)return null;
+var sidTxt=String(sid);
+for(var i=0;i<SL.length;i++){
+var s=SL[i];
+if(s&&String(s.id)===sidTxt)return s;
+}
+return null;
+}
+function buildVirtualDisplacementStateData(sid){
+var disp=getStateDisplacements(sid);
+if(!disp||!ON||ON.length===0)return null;
+var mags=new Array(ON.length);
+var vmin=Infinity,vmax=-Infinity;
+for(var i=0;i<ON.length;i++){
+var d=disp[i]||[0,0,0];
+var dx=Number(d[0]);
+var dy=Number(d[1]);
+var dz=Number(d[2]);
+if(!isFinite(dx))dx=0;
+if(!isFinite(dy))dy=0;
+if(!isFinite(dz))dz=0;
+var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
+if(!isFinite(mag))mag=0;
+mags[i]=mag;
+if(mag<vmin)vmin=mag;
+if(mag>vmax)vmax=mag;
+}
+if(!isFinite(vmin)||!isFinite(vmax)){
+vmin=0;
+vmax=1;
+}
+var colorMax=vmax;
+if(Math.abs(colorMax-vmin)<1e-10)colorMax=vmin+1.0;
+var inv=1/Math.max(1e-30,colorMax-vmin);
+var colors=new Array(mags.length);
+for(var mi=0;mi<mags.length;mi++){
+var nv=(mags[mi]-vmin)*inv;
+if(!isFinite(nv))nv=0;
+colors[mi]=Math.max(0,Math.min(1,nv));
+}
+var meta=getStateMetaEntry(sid)||{};
+var timeVal=Number(meta.time);
+if(!isFinite(timeVal))timeVal=0;
+var incVal=Number(meta.increment);
+if(!isFinite(incVal))incVal=0;
+var freqVal=null;
+if(meta.frequency!==undefined&&meta.frequency!==null){
+var fNum=Number(meta.frequency);
+if(isFinite(fNum))freqVal=fNum;
+}
+var out={
+time:timeVal,
+increment:incVal,
+frequency:freqVal,
+title:(meta.title!==undefined&&meta.title!==null)?String(meta.title):'',
+colors:colors,
+color_min:vmin,
+color_max:colorMax
+};
+if(CENTROID_EXPORTED){
+ensureElemConnectivityMaps();
+var centroidVals=[];
+var cvmin=Infinity,cvmax=-Infinity;
+if(elemNodesMap&&elemNodesMap.length>0){
+centroidVals=new Array(elemNodesMap.length);
+for(var ei=0;ei<elemNodesMap.length;ei++){
+var nodeList=elemNodesMap[ei];
+var sum=0,count=0;
+if(nodeList&&nodeList.length){
+for(var ni=0;ni<nodeList.length;ni++){
+var idx=nodeList[ni];
+if(idx===undefined||idx===null||idx<0||idx>=mags.length)continue;
+var mv=mags[idx];
+if(!isFinite(mv))continue;
+sum+=mv;
+count++;
+}
+}
+var cv=(count>0)?(sum/count):0;
+centroidVals[ei]=cv;
+if(cv<cvmin)cvmin=cv;
+if(cv>cvmax)cvmax=cv;
+}
+}
+if(!isFinite(cvmin)||!isFinite(cvmax)){
+cvmin=0;
+cvmax=1;
+}
+var centroidMax=cvmax;
+if(Math.abs(centroidMax-cvmin)<1e-10)centroidMax=cvmin+1.0;
+var cInv=1/Math.max(1e-30,centroidMax-cvmin);
+var centroidColors=new Array(centroidVals.length);
+for(var ci=0;ci<centroidVals.length;ci++){
+var cnv=(centroidVals[ci]-cvmin)*cInv;
+if(!isFinite(cnv))cnv=0;
+centroidColors[ci]=Math.max(0,Math.min(1,cnv));
+}
+out.centroid_colors=centroidColors;
+out.centroid_min=cvmin;
+out.centroid_max=centroidMax;
+}
+return out;
+}
 function hasVarStateData(v){
-return !!(v&&OUT_STATE_INDEX&&OUT_STATE_INDEX[v]);
+return getVarStateIds(v).length>0;
 }
 function hasStateData(v,sid){
-if(!v||!sid||!OUT_STATE_INDEX||!OUT_STATE_INDEX[v])return false;
-var arr=OUT_STATE_INDEX[v];
-for(var i=0;i<arr.length;i++){if(arr[i]===sid)return true;}
+if(!v||!sid)return false;
+var arr=getVarStateIds(v);
+var sidTxt=String(sid);
+for(var i=0;i<arr.length;i++){
+if(String(arr[i])===sidTxt)return true;
+}
 return false;
 }
 function getStateData(v,sid){
 if(!v||!sid)return null;
 var cache=ensureVarStateCache(v);
 if(cache[sid])return cache[sid];
+if(isVirtualDisplacementVar(v)){
+try{
+var virtualData=buildVirtualDisplacementStateData(sid);
+if(virtualData){
+cache[sid]=virtualData;
+return virtualData;
+}
+}catch(e){
+console.error('Virtual displacement build failed for '+sid+':',e);
+}
+return null;
+}
 var map=OUT_STATE_TAG_MAP[v];
 if(!map||!map[sid])return null;
 var txt=readChunkedJsonTag(map[sid]);
@@ -2274,7 +2479,7 @@ var stEl=document.getElementById('st');
 if(stEl)stEl.textContent='THREE.js failed to load. Check internet/proxy access to CDN.';
 }
 let cs=DEFAULT_SCALE_FACTOR,cst=null,cn=ON.slice(),cvEl=null,currentVar="''' + (default_var if default_var else '') + '''";
-let sc,ca,caPersp,caOrtho,re,ms,eg,axHelper,dr=false,pn=false,mz=false,pm={x:0,y:0},ir=false,isPerspective=true;
+let sc,ca,caPersp,caOrtho,re,ms,eg,axHelper,dr=false,pn=false,mz=false,pm={x:0,y:0},ir=false,isPerspective=false;
 let ctrlRotAxis=null;
 let uMs=null,uEg=null,showUndeformed=false;
 let undContourMode=false;
@@ -2331,6 +2536,7 @@ let curMin=CR[0],curMax=CR[1];
 let legFontSize=12;
 let valueInfoFontSize=12;
 let dynamicLegend=false;
+let legendAutoResetPending=false;
 let dataMin=CR[0],dataMax=CR[1];
 let discreteMode=true,N_DISC=10;
 let legendValueFormat='exp',legendFloatDecimals=6;
@@ -3191,7 +3397,6 @@ box.h=Math.max(24,box.el.offsetHeight||24);
 clampDialogBoxToView(box);
 applyDialogBoxDomPosition(box);
 if(dialogEditBoxId===box.id)positionDialogEditPopup(box);
-if(dialogFontBoxId===box.id)positionDialogFontPopup(box);
 }
 
 function getDialogFontSizePx(box){
@@ -3225,6 +3430,17 @@ box.body.style.textDecoration='';
 box.body.style.color='';
 }
 
+function getDialogSelectionInfo(box){
+if(!box||!box.body||!window.getSelection)return null;
+var sel=window.getSelection();
+if(!sel||sel.rangeCount<1)return null;
+var range=sel.getRangeAt(0);
+if(!range)return null;
+var node=range.commonAncestorContainer;
+if(node&&(node===box.body||box.body.contains(node)))return {range:range,collapsed:!!range.collapsed};
+return null;
+}
+
 function setDialogFontSize(v){
 var n=parseInt(v,10);
 if(!isFinite(n))n=dialogFontSize;
@@ -3247,14 +3463,13 @@ box.richHtml=box.body.innerHTML||'';
 }
 
 function getDialogSelectionRange(box){
-if(!box||!box.body||!window.getSelection)return null;
-var sel=window.getSelection();
-if(!sel||sel.rangeCount<1)return null;
-var range=sel.getRangeAt(0);
-if(!range)return null;
-var node=range.commonAncestorContainer;
-if(node&&(node===box.body||box.body.contains(node)))return range;
-return null;
+var info=getDialogSelectionInfo(box);
+return info?info.range:null;
+}
+
+function hasDialogExpandedSelection(box){
+var info=getDialogSelectionInfo(box);
+return !!(info&&!info.collapsed);
 }
 
 function saveDialogSelection(box){
@@ -3321,10 +3536,67 @@ return '#'+h;
 return xyForecastSafeColor(s,'#222222');
 }
 
+function captureDialogTypingStyle(box,keepColor){
+var style=ensureDialogTextStyle(box);
+try{style.bold=!!document.queryCommandState('bold');}catch(e){}
+try{style.italic=!!document.queryCommandState('italic');}catch(e){}
+try{style.underline=!!document.queryCommandState('underline');}catch(e){}
+if(keepColor!==true){
+try{style.color=dialogCssColorToHex(document.queryCommandValue('foreColor'));}catch(e){}
+}
+return style;
+}
+
+function updateDialogStoredTypingStyle(box,cmd,value){
+var style=ensureDialogTextStyle(box);
+if(cmd==='bold'||cmd==='italic'||cmd==='underline'){
+style[cmd]=!style[cmd];
+}else if(cmd==='foreColor'){
+style.color=dialogCssColorToHex(value);
+}
+return style;
+}
+
+function applyDialogTypingStyle(box){
+if(!box||!box.body||box.readOnly||box.allowRichEdit===false||!box.editing)return false;
+var info=getDialogSelectionInfo(box);
+if(!info||!info.collapsed)return false;
+var style=ensureDialogTextStyle(box);
+try{document.execCommand('styleWithCSS',false,true);}catch(e){}
+function syncCmd(cmd,desired){
+var current=false;
+try{current=!!document.queryCommandState(cmd);}catch(e){}
+if(current===!!desired)return;
+try{document.execCommand(cmd,false,null);}catch(e){}
+}
+syncCmd('bold',style.bold);
+syncCmd('italic',style.italic);
+syncCmd('underline',style.underline);
+var currentColor='#222222';
+try{currentColor=dialogCssColorToHex(document.queryCommandValue('foreColor'));}catch(e){}
+if(String(currentColor).toLowerCase()!==String(style.color).toLowerCase()){
+try{document.execCommand('foreColor',false,style.color);}catch(e){}
+}
+saveDialogSelection(box);
+return true;
+}
+
 function dialogExecRichCommand(box,cmd,value){
 if(!box||!box.body||box.readOnly||box.allowRichEdit===false)return;
 setDialogEditing(box,true);
 restoreDialogSelection(box);
+var hadExpandedSelection=hasDialogExpandedSelection(box);
+if(!hadExpandedSelection){
+updateDialogStoredTypingStyle(box,cmd,value);
+box.body.focus();
+applyDialogTypingStyle(box);
+saveDialogSelection(box);
+syncDialogTextSnapshot(box);
+syncDialogBoxSize(box);
+syncDialogEditPopup(box);
+updateDialogBoxesVisuals();
+return;
+}
 try{document.execCommand('styleWithCSS',false,true);}catch(e){}
 try{document.execCommand(cmd,false,value!==undefined?value:null);}catch(e){}
 box.body.focus();
@@ -3346,6 +3618,7 @@ box.body.contentEditable=box.editing?'true':'false';
 if(box.editing){
 box.body.focus();
 restoreDialogSelection(box);
+applyDialogTypingStyle(box);
 }
 }
 
@@ -3369,7 +3642,7 @@ if(dialogFontBoxId!==null&&dialogFontBoxId!==nextId&&!keepEditPopup){
 closeDialogFontPopup();
 }else if(dialogFontBoxId!==null&&dialogFontBoxId===nextId){
 var fontBox=getDialogById(dialogFontBoxId);
-if(fontBox){syncDialogFontPopup(fontBox);positionDialogFontPopup(fontBox);}
+if(fontBox){syncDialogFontPopup(fontBox);}
 }
 }
 
@@ -3419,18 +3692,24 @@ dialogEditPopupEl.style.top=top+'px';
 function syncDialogEditPopup(box){
 if(!dialogEditPopupEl||!box)return;
 if(box.readOnly||box.allowRichEdit===false){closeDialogEditPopup();return;}
-if(box.editing)restoreDialogSelection(box);
+var selInfo=getDialogSelectionInfo(box);
+var useStoredStyle=!selInfo||selInfo.collapsed;
+var style=ensureDialogTextStyle(box);
 var btns=dialogEditPopupEl.querySelectorAll('.dep-btn[data-style]');
 for(var i=0;i<btns.length;i++){
 var k=btns[i].getAttribute('data-style');
-var on=false;
+var on=!!style[k];
+if(!useStoredStyle){
 try{on=!!document.queryCommandState(k);}catch(e){}
+}
 btns[i].classList.toggle('on',on);
 }
 var colorIn=dialogEditPopupEl.querySelector('#dialog-edit-color');
 if(colorIn){
-var color='#222222';
+var color=style.color||'#222222';
+if(!useStoredStyle){
 try{color=dialogCssColorToHex(document.queryCommandValue('foreColor'));}catch(e){}
+}
 if(String(colorIn.value).toLowerCase()!==String(color).toLowerCase())colorIn.value=color;
 }
 }
@@ -3455,7 +3734,7 @@ function ensureDialogFontPopup(){
 if(dialogFontPopupEl)return dialogFontPopupEl;
 var pop=document.createElement('div');
 pop.className='dialog-font-popup';
-pop.innerHTML='<div class="dfp-head"><span>Font Size</span><button type="button" class="dfp-close">X</button></div><div class="dfp-row"><input type="range" id="dialog-font-size-range" min="8" max="36" step="1" value="11"><span id="dialog-font-size-val" class="dfp-val">11</span></div>';
+pop.innerHTML='<div class="dfp-head"><span>Font Size</span><button type="button" class="dfp-close">X</button></div><div class="dfp-row"><label for="dialog-font-size-range" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Font</label><input type="range" id="dialog-font-size-range" min="8" max="36" step="1" value="11"><span id="dialog-font-size-val" class="dfp-val">11</span></div><div class="dfp-row" id="dialog-forecast-decimals-row" style="display:none;margin-top:8px"><label for="dialog-forecast-decimals-range" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Decimals</label><input type="range" id="dialog-forecast-decimals-range" min="0" max="10" step="1" value="6"><span id="dialog-forecast-decimals-val" class="dfp-val">6</span></div>';
 document.body.appendChild(pop);
 pop.querySelector('.dfp-close').onclick=function(ev){ev.stopPropagation();closeDialogFontPopup();};
 var rangeEl=pop.querySelector('#dialog-font-size-range');
@@ -3464,6 +3743,14 @@ ev.stopPropagation();
 var box=getDialogById(dialogFontBoxId);
 if(!box)return;
 setDialogBoxFontSize(box,this.value);
+};
+var decRangeEl=pop.querySelector('#dialog-forecast-decimals-range');
+if(decRangeEl)decRangeEl.oninput=function(ev){
+ev.stopPropagation();
+var box=getDialogById(dialogFontBoxId);
+if(!box||!isForecastDialogBox(box))return;
+box.forecastDialogDecimals=parseInt(this.value,10);
+refreshForecastDialogBoxContent(box);
 };
 dialogFontPopupEl=pop;
 return dialogFontPopupEl;
@@ -3493,6 +3780,16 @@ var rangeEl=dialogFontPopupEl.querySelector('#dialog-font-size-range');
 var valEl=dialogFontPopupEl.querySelector('#dialog-font-size-val');
 if(rangeEl&&String(rangeEl.value)!==String(n))rangeEl.value=String(n);
 if(valEl)valEl.textContent=String(n);
+var decRow=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-row');
+var decRangeEl=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-range');
+var decValEl=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-val');
+var showForecast=isForecastDialogBox(box);
+if(decRow)decRow.style.display=showForecast?'flex':'none';
+if(showForecast){
+var d=getForecastDialogDecimals(box);
+if(decRangeEl&&String(decRangeEl.value)!==String(d))decRangeEl.value=String(d);
+if(decValEl)decValEl.textContent=String(d);
+}
 }
 
 function setDialogBoxFontSize(box,v){
@@ -3629,6 +3926,11 @@ box.linkBtn.classList.remove('dialog-btn-disconnect');
 }
 }
 
+function refreshDialogCopyButton(box){
+if(!box||!box.copyBtn)return;
+box.copyBtn.style.display=isForecastDialogBox(box)?'inline-block':'none';
+}
+
 function refreshDialogEditButton(box){
 if(!box||!box.editBtn)return;
 var show=(box.allowRichEdit!==false)&&!box.readOnly;
@@ -3669,7 +3971,7 @@ var p=dialogCanvasPosFromClient(clientX,clientY);
 if(!p)return null;
 var container=document.getElementById('dialog-box-container');
 if(!container)return null;
-var box={id:dialogIdSeed++,x:p.x+12,y:p.y+12,w:120,h:30,text:'Text',nodeIdx:-1,editing:false,readOnly:false,allowRichEdit:true,textStyle:{bold:false,italic:false,underline:false,color:'#222222'},fontSizePx:dialogFontSize,savedRange:null,richHtml:null,el:null,body:null,tools:null,linkBtn:null,fontBtn:null,editBtn:null};
+var box={id:dialogIdSeed++,x:p.x+12,y:p.y+12,w:120,h:30,text:'Text',nodeIdx:-1,editing:false,readOnly:false,allowRichEdit:true,textStyle:{bold:false,italic:false,underline:false,color:'#222222'},fontSizePx:dialogFontSize,savedRange:null,richHtml:null,forecastDialogData:null,forecastDialogDecimals:6,el:null,body:null,tools:null,linkBtn:null,copyBtn:null,fontBtn:null,editBtn:null};
 var el=document.createElement('div');
 el.className='dialog-box';
 el.setAttribute('data-did',String(box.id));
@@ -3688,6 +3990,15 @@ document.getElementById('st').textContent='Dialog '+box.id+' disconnected';
 return;
 }
 startDialogConnect(box.id);
+});
+var btnCopy=document.createElement('button');
+btnCopy.className='dialog-btn dialog-btn-copy';
+btnCopy.textContent='copy';
+btnCopy.title='Copy forecast data to clipboard';
+btnCopy.style.display='none';
+btnCopy.addEventListener('click',function(ev){
+ev.stopPropagation();
+copyForecastDialogBoxData(box);
 });
 var btnF=document.createElement('button');
 btnF.className='dialog-btn dialog-btn-font';
@@ -3713,6 +4024,7 @@ btnX.textContent='x';
 btnX.title='Delete';
 btnX.addEventListener('click',function(ev){ev.stopPropagation();removeDialogBoxById(box.id);});
 tools.appendChild(btnC);
+tools.appendChild(btnCopy);
 tools.appendChild(btnF);
 tools.appendChild(btnE);
 tools.appendChild(btnX);
@@ -3720,15 +4032,37 @@ var body=document.createElement('div');
 body.className='dialog-body';
 body.contentEditable='false';
 body.textContent='Text';
+body.addEventListener('focus',function(){
+if(box.editing)applyDialogTypingStyle(box);
+if(dialogEditBoxId===box.id)syncDialogEditPopup(box);
+});
 body.addEventListener('dblclick',function(ev){
 ev.stopPropagation();
 if(box.readOnly)return;
 for(var i=0;i<dialogBoxes.length;i++){if(dialogBoxes[i].id!==box.id)setDialogEditing(dialogBoxes[i],false);}
 setDialogEditing(box,true);
 });
-body.addEventListener('mouseup',function(){saveDialogSelection(box);if(dialogEditBoxId===box.id)syncDialogEditPopup(box);});
-body.addEventListener('keyup',function(){saveDialogSelection(box);if(dialogEditBoxId===box.id)syncDialogEditPopup(box);});
-body.addEventListener('input',function(){syncDialogTextSnapshot(box);saveDialogSelection(box);syncDialogBoxSize(box);});
+body.addEventListener('beforeinput',function(ev){
+if(!box.editing)return;
+var it=(ev&&ev.inputType)?String(ev.inputType):'';
+if(it.indexOf('insert')===0)applyDialogTypingStyle(box);
+});
+body.addEventListener('mouseup',function(){
+if(box.editing&&!hasDialogExpandedSelection(box))applyDialogTypingStyle(box);
+else saveDialogSelection(box);
+if(dialogEditBoxId===box.id)syncDialogEditPopup(box);
+});
+body.addEventListener('keyup',function(ev){
+if(box.editing&&!(ev&&((ev.ctrlKey||ev.metaKey||ev.altKey)))&&!hasDialogExpandedSelection(box))applyDialogTypingStyle(box);
+else saveDialogSelection(box);
+if(dialogEditBoxId===box.id)syncDialogEditPopup(box);
+});
+body.addEventListener('input',function(){
+syncDialogTextSnapshot(box);
+saveDialogSelection(box);
+syncDialogBoxSize(box);
+if(dialogEditBoxId===box.id)syncDialogEditPopup(box);
+});
 el.appendChild(tools);
 el.appendChild(body);
 el.addEventListener('mousedown',function(ev){
@@ -3742,11 +4076,12 @@ var rect=cvEl?cvEl.getBoundingClientRect():{left:0,top:0};
 dialogDrag={id:box.id,ox:ev.clientX-rect.left-box.x,oy:ev.clientY-rect.top-box.y};
 });
 container.appendChild(el);
-box.el=el;box.body=body;box.tools=tools;box.linkBtn=btnC;box.fontBtn=btnF;box.editBtn=btnE;
+box.el=el;box.body=body;box.tools=tools;box.linkBtn=btnC;box.copyBtn=btnCopy;box.fontBtn=btnF;box.editBtn=btnE;
 dialogBoxes.push(box);
 applyDialogFontToBox(box);
 applyDialogTextStyle(box);
 refreshDialogConnectButton(box);
+refreshDialogCopyButton(box);
 refreshDialogEditButton(box);
 syncDialogTextSnapshot(box);
 syncDialogBoxSize(box);
@@ -4357,7 +4692,7 @@ const aspect=w/h;
 caPersp=new THREE.PerspectiveCamera(45,aspect,0.1,B*100);
 const frustumSize=B*2;
 caOrtho=new THREE.OrthographicCamera(frustumSize*aspect/-2,frustumSize*aspect/2,frustumSize/2,frustumSize/-2,0.1,B*100);
-ca=caPersp;
+ca=caOrtho;
 uc();
 re=createRendererWithFallback(cvEl,w,h);
 computeMeshBBox();
@@ -5526,7 +5861,7 @@ hVals.push(tfBuildCopyCellHtml(td,c));
 }
 }
 if(vals.length>0){
-lines.push(vals.join('\t'));
+lines.push(vals.join('\\t'));
 htmlRows.push('<tr>'+hVals.join('')+'</tr>');
 }
 }
@@ -5543,7 +5878,7 @@ var td=tr.querySelector('td[data-col="'+c+'"]');
 vals.push(td?td.textContent.trim():'');
 hVals.push(tfBuildCopyCellHtml(td,c));
 });
-lines.push(vals.join('\t'));
+lines.push(vals.join('\\t'));
 htmlRows.push('<tr>'+hVals.join('')+'</tr>');
 });
 }
@@ -6293,7 +6628,7 @@ if(sd[mxKey]>gMax)gMax=sd[mxKey];
 }
 }
 if(!isFinite(gMin)){
-var allStateIds=(OUT_STATE_INDEX&&OUT_STATE_INDEX[currentVar])?OUT_STATE_INDEX[currentVar]:[];
+var allStateIds=getVarStateIds(currentVar);
 for(var ai=0;ai<allStateIds.length;ai++){
 var k=allStateIds[ai];
 var kd=getStateData(currentVar,k);
@@ -7136,6 +7471,7 @@ var uMin=parseFloat(uMinStr),uMax=parseFloat(uMaxStr);
 if(isNaN(uMin)||isNaN(uMax)){document.getElementById('st').textContent='Invalid min/max values';return;}
 if(uMin>=uMax){document.getElementById('st').textContent='Min must be less than Max';return;}
 curMin=uMin;curMax=uMax;
+legendAutoResetPending=false;
 if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
 updateLegendRangeInputs();
 ulv(curMin,curMax);
@@ -7156,6 +7492,7 @@ document.getElementById('st').textContent='Legend range applied: '+formatLegendN
 // Reset legend to data range
 function resetLegRange(){
 curMin=dataMin;curMax=dataMax;
+legendAutoResetPending=false;
 if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
 updateLegendRangeInputs();
 ulv(curMin,curMax);
@@ -7270,6 +7607,7 @@ document.getElementById('cln').textContent=currentVar;
 AD=ensureVarStateCache(currentVar);
 cst=null;rawColors=null;centroidRawColors=null;
 dataMin=0;dataMax=1;curMin=0;curMax=1;
+legendAutoResetPending=true;
 updateLegendRangeInputs();
 document.getElementById('leg-data-info').textContent='Data range: select an increment';
 document.getElementById('ss').value='';
@@ -7379,8 +7717,9 @@ dataMin=sd.centroid_min;dataMax=sd.centroid_max;
 }else{
 dataMin=sd.color_min;dataMax=sd.color_max;
 }
-if(dynamicLegend){
+if(dynamicLegend||legendAutoResetPending||!isFinite(curMin)||!isFinite(curMax)){
 curMin=dataMin;curMax=dataMax;
+legendAutoResetPending=false;
 if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
 }
 updateLegendRangeInputs();
@@ -10307,9 +10646,7 @@ var xl=(headers[ci]&&headers[ci]!=='')?headers[ci]:'X';
 var yl=(headers[ci+1]&&headers[ci+1]!=='')?headers[ci+1]:'Y';
 if(firstCurve){firstXLabel=xl;firstYLabel=yl;}
 if(firstCurve&&xyEditingIdx>=0&&xyEditingIdx<xyCurves.length){
-xyCurves[xyEditingIdx].data=data;xyCurves[xyEditingIdx].axis='primary';
-xyCurves[xyEditingIdx].xlabel=xl;xyCurves[xyEditingIdx].ylabel=yl;
-if(yl)xyCurves[xyEditingIdx].name=yl;
+xyAppendOrReplaceEditingCurveData(data,'primary',xl,yl);
 firstCurve=false;
 }else{
 var idx=xyCurves.length;
@@ -10332,9 +10669,7 @@ var yl2=(headers[ci+2]&&headers[ci+2]!=='')?headers[ci+2]:'Y2';
 if(firstCurve){firstXLabel=xl;firstYLabel=yl1;firstSYLabel=yl2;}
 if(d1.length>0){
 if(firstCurve&&xyEditingIdx>=0&&xyEditingIdx<xyCurves.length){
-xyCurves[xyEditingIdx].data=d1;xyCurves[xyEditingIdx].axis='primary';
-xyCurves[xyEditingIdx].xlabel=xl;xyCurves[xyEditingIdx].ylabel=yl1;
-if(yl1)xyCurves[xyEditingIdx].name=yl1;
+xyAppendOrReplaceEditingCurveData(d1,'primary',xl,yl1);
 firstCurve=false;
 }else{
 var idx=xyCurves.length;
@@ -10562,6 +10897,19 @@ function mapYs(v){return secR?mt+(secR.ymax-v)/(secR.ymax-secR.ymin)*ph:0;}
 ctx.strokeStyle='#eee';ctx.lineWidth=1;
 for(var gi=0;gi<xTicks.length;gi++){var gx=mapXp(xTicks[gi]);ctx.beginPath();ctx.moveTo(gx,mt);ctx.lineTo(gx,mt+ph);ctx.stroke();}
 for(var gi=0;gi<yTicks.length;gi++){var gy=mapYp(yTicks[gi]);ctx.beginPath();ctx.moveTo(ml,gy);ctx.lineTo(ml+pw,gy);ctx.stroke();}
+if(hasSec&&secR){
+ctx.save();
+ctx.strokeStyle='rgba(244,67,54,0.22)';
+ctx.lineWidth=0.8;
+for(var gi=0;gi<secYTicks.length;gi++){
+var gsy=mapYs(secYTicks[gi]);
+ctx.beginPath();
+ctx.moveTo(ml,gsy);
+ctx.lineTo(ml+pw,gsy);
+ctx.stroke();
+}
+ctx.restore();
+}
 ctx.strokeStyle='#333';ctx.lineWidth=1.5;
 ctx.strokeRect(ml,mt,pw,ph);
 var oriCb=document.getElementById('xy-origin');
@@ -10760,6 +11108,25 @@ var s=Number(v).toFixed(6);
 while(s.indexOf('.')>=0&&(s.charAt(s.length-1)==='0'||s.charAt(s.length-1)==='.')){
 if(s.charAt(s.length-1)==='.'){s=s.slice(0,-1);break;}
 s=s.slice(0,-1);
+}
+if(s==='-0')s='0';
+return s;
+}
+
+function xyForecastFormatNumberWithDecimals(v,decimals){
+if(v===undefined||v===null||!isFinite(v))return String(v);
+var d=parseInt(decimals,10);
+if(!isFinite(d))d=6;
+d=Math.max(0,Math.min(10,d));
+if(v===0)return d>0?Number(0).toFixed(d):'0';
+var av=Math.abs(v);
+if(av>=1e4||av<1e-4)return Number(v).toExponential(d);
+var s=Number(v).toFixed(d);
+if(d>0){
+while(s.indexOf('.')>=0&&(s.charAt(s.length-1)==='0'||s.charAt(s.length-1)==='.')){
+if(s.charAt(s.length-1)==='.'){s=s.slice(0,-1);break;}
+s=s.slice(0,-1);
+}
 }
 if(s==='-0')s='0';
 return s;
@@ -10987,6 +11354,38 @@ container.innerHTML='';
 xyAddForecastField('');
 }
 
+function xyForecastAxisNameFromUi(inputId,fallback){
+var el=document.getElementById(inputId);
+var txt=el?String(el.value||'').trim():'';
+if(txt)return txt;
+return fallback;
+}
+
+function xyForecastGetDisplayAxisLabels(curve,axisKey){
+var isSecondary=!!(curve&&curve.axis==='secondary');
+var xAxisLabel=xyForecastAxisNameFromUi('xy-xname',(curve&&curve.xlabel)||'X');
+var primaryAxisLabel=xyForecastAxisNameFromUi('xy-yname',(!isSecondary&&(curve&&curve.ylabel))?curve.ylabel:'Y');
+var secondaryAxisLabel=xyForecastAxisNameFromUi('xy-syname',(isSecondary&&(curve&&curve.ylabel))?curve.ylabel:'Y (R)');
+var curveAxisLabel=isSecondary?secondaryAxisLabel:primaryAxisLabel;
+return {
+xAxisLabel:xAxisLabel,
+primaryAxisLabel:primaryAxisLabel,
+secondaryAxisLabel:secondaryAxisLabel,
+curveAxisLabel:curveAxisLabel,
+sourceAxisLabel:(axisKey==='y')?curveAxisLabel:xAxisLabel,
+targetAxisLabel:(axisKey==='y')?xAxisLabel:curveAxisLabel
+};
+}
+
+function xyForecastGetSecondaryRowLabel(sec,result,totalSecondary){
+var base=(result&&result.secondaryAxisLabel)?result.secondaryAxisLabel:((sec&&sec.ylabel)?sec.ylabel:'Y (R)');
+base=String(base||'').trim()||'Y (R)';
+if(totalSecondary>1&&sec&&sec.name){
+return base+' ('+sec.name+')';
+}
+return base;
+}
+
 function xyCollectForecastInputValues(){
 var container=document.getElementById('xy-forecast-fields');
 if(!container)return null;
@@ -11016,10 +11415,11 @@ var curveInfo=document.getElementById('xy-forecast-curve-info');
 var axisNote=document.getElementById('xy-forecast-axis-note');
 var axisEl=document.getElementById('xy-forecast-axis');
 var axisKey=(axisEl&&axisEl.value==='y')?'y':'x';
-var sourceLabel=axisKey==='y'?((curve&&curve.ylabel)?curve.ylabel:'Y'):((curve&&curve.xlabel)?curve.xlabel:'X');
-var targetLabel=axisKey==='y'?((curve&&curve.xlabel)?curve.xlabel:'X'):((curve&&curve.ylabel)?curve.ylabel:'Y');
+var axisLabels=xyForecastGetDisplayAxisLabels(curve,axisKey);
+var sourceLabel=axisLabels.sourceAxisLabel;
+var targetLabel=axisLabels.targetAxisLabel;
 var curveName=curve&&curve.name?curve.name:((xySelectedIdx>=0)?('Curve '+(xySelectedIdx+1)):'Selected curve');
-var axisSide=(curve&&curve.axis==='secondary')?'Secondary Y axis (R)':'Primary Y axis (L)';
+var axisSide=(curve&&curve.axis==='secondary')?('Secondary '+axisLabels.secondaryAxisLabel+' axis (R)'):('Primary '+axisLabels.primaryAxisLabel+' axis (L)');
 if(curveInfo)curveInfo.textContent='Curve: '+curveName+' | '+axisSide;
 if(axisNote)axisNote.textContent='All Forecast fields use "'+sourceLabel+'" as the reference and estimate "'+targetLabel+'" with the Multipole interpolation/extrapolation logic along the selected curve.';
 xyRefreshForecastFieldLabels();
@@ -11096,10 +11496,10 @@ var fg=xyForecastTextColorForBg(bg);
 return '<div class="xy-result-row"><span class="xy-result-chip" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span>'+xyEscapeHtml(value)+'</span></div>';
 }
 
-function xyForecastResultForecastRowHtml(sourceAxisLabel,sourceValue,targetAxisLabel,targetValue,color){
+function xyForecastResultForecastRowHtml(sourceAxisLabel,sourceValue,targetAxisLabel,targetValue,color,decimals){
 var bg=xyForecastSafeColor(color,'#8E24AA');
 var fg=xyForecastTextColorForBg(bg);
-return '<div class="xy-result-row"><span class="xy-result-chip" style="background:'+bg+';color:'+fg+'">Forecast</span><span>'+xyEscapeHtml(sourceAxisLabel)+' = '+xyForecastFormatNumber(sourceValue)+' | <span class="xy-result-chip" style="min-width:0;background:'+bg+';color:'+fg+'">'+xyEscapeHtml(targetAxisLabel)+' = '+xyForecastFormatNumber(targetValue)+'</span></span></div>';
+return '<div class="xy-result-row"><span class="xy-result-chip" style="background:'+bg+';color:'+fg+'">Forecast</span><span>'+xyEscapeHtml(sourceAxisLabel)+' = '+xyForecastFormatNumberWithDecimals(sourceValue,decimals)+' | <span class="xy-result-value-highlight">'+xyEscapeHtml(targetAxisLabel)+' = '+xyForecastFormatNumberWithDecimals(targetValue,decimals)+'</span></span></div>';
 }
 
 function xyForecastResultBlockHtml(title,color,rows){
@@ -11118,13 +11518,13 @@ var mainRows=[];
 mainRows.push(xyForecastResultRowHtml('Axis',result.sourceAxisLetter+' -> '+result.targetAxisLetter+' | '+result.axisCaption,result.curveColor));
 var primaryTargetValue=(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY;
 mainRows.push(xyForecastResultForecastRowHtml(result.sourceAxisLetter,entry.inputValue,result.targetAxisLetter,primaryTargetValue,result.curveColor));
-html.push(xyForecastResultBlockHtml(result.curveName+' | '+entry.label, result.curveColor, mainRows));
+html.push(xyForecastResultBlockHtml(result.curveName, result.curveColor, mainRows));
 }
 if(result.includeSecondary){
 for(var ei=0;ei<result.entries.length;ei++){
 var e=result.entries[ei];
 if(e.secondary.length===0){
-html.push(xyForecastResultBlockHtml('Secondary Axis | '+e.label,'#757575',[xyForecastResultRowHtml('Axis','X -> Y | Secondary Y axis (R)','#757575'),xyForecastResultRowHtml('Forecast','No secondary-axis result available for this forecast value.','#757575')]));
+html.push(xyForecastResultBlockHtml('Secondary Axis','#757575',[xyForecastResultRowHtml('Axis','X -> Y | Secondary Y axis (R)','#757575'),xyForecastResultRowHtml('Forecast','No secondary-axis result available for this forecast value.','#757575')]));
 continue;
 }
 for(var si=0;si<e.secondary.length;si++){
@@ -11132,31 +11532,27 @@ var sec=e.secondary[si];
 var secRows=[];
 secRows.push(xyForecastResultRowHtml('Axis','X -> Y | Secondary Y axis (R)',sec.color));
 secRows.push(xyForecastResultForecastRowHtml('X',e.forecastX,'Y',sec.forecastY,sec.color));
-html.push(xyForecastResultBlockHtml(sec.name+' | '+e.label, sec.color, secRows));
+html.push(xyForecastResultBlockHtml(sec.name, sec.color, secRows));
 }
 }
 }
 body.innerHTML=html.join('');
 }
 
-function xyBuildForecastDialogText(result){
+function xyBuildForecastDialogText(result,decimals){
 if(!result)return 'Forecast result unavailable';
 var lines=[];
 lines.push('Forecast Result');
 for(var i=0;i<result.entries.length;i++){
 var entry=result.entries[i];
 lines.push('');
-lines.push(result.curveName+' | '+entry.label);
-lines.push('Forecast: '+result.sourceAxisLetter+' = '+xyForecastFormatNumber(entry.inputValue)+' | '+result.targetAxisLetter+' = '+xyForecastFormatNumber((result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY));
-if(result.includeSecondary){
-if(entry.secondary.length>0){
+lines.push(result.curveName);
+lines.push((result.sourceAxisLabel||result.sourceAxisLetter||'X')+': '+xyForecastFormatNumberWithDecimals(entry.inputValue,decimals));
+lines.push((result.targetAxisLabel||result.targetAxisLetter||'Y')+': '+xyForecastFormatNumberWithDecimals((result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,decimals));
+if(result.includeSecondary&&Array.isArray(entry.secondary)&&entry.secondary.length>0){
 for(var si=0;si<entry.secondary.length;si++){
 var sec=entry.secondary[si];
-lines.push(sec.name+' | '+entry.label);
-lines.push('Forecast: X = '+xyForecastFormatNumber(entry.forecastX)+' | Y = '+xyForecastFormatNumber(sec.forecastY));
-}
-}else{
-lines.push('Secondary axis: no result available for this forecast value.');
+lines.push(xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length)+': '+xyForecastFormatNumberWithDecimals(sec.forecastY,decimals));
 }
 }
 }
@@ -11169,10 +11565,12 @@ var fg=xyForecastTextColorForBg(bg);
 return '<div class="dlg-rich-row" style="--dlg-accent:'+bg+'"><span class="dlg-rich-tag" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span class="dlg-rich-val">'+xyEscapeHtml(value)+'</span></div>';
 }
 
-function xyForecastDialogForecastRowHtml(sourceAxisLabel,sourceValue,targetAxisLabel,targetValue,color){
+function xyForecastDialogNumberRowHtml(label,value,color,decimals,highlight){
 var bg=xyForecastSafeColor(color,'#8E24AA');
 var fg=xyForecastTextColorForBg(bg);
-return '<div class="dlg-rich-row" style="--dlg-accent:'+bg+'"><span class="dlg-rich-tag" style="background:'+bg+';color:'+fg+'">Forecast</span><span class="dlg-rich-val">'+xyEscapeHtml(sourceAxisLabel)+' = '+xyForecastFormatNumber(sourceValue)+' | <span class="dlg-rich-tag" style="display:inline-block;min-width:0;background:'+bg+';color:'+fg+'">'+xyEscapeHtml(targetAxisLabel)+' = '+xyForecastFormatNumber(targetValue)+'</span></span></div>';
+var valHtml=xyEscapeHtml(xyForecastFormatNumberWithDecimals(value,decimals));
+if(highlight)valHtml='<span class="dlg-rich-result">'+valHtml+'</span>';
+return '<div class="dlg-rich-row" style="--dlg-accent:'+bg+'"><span class="dlg-rich-tag" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span class="dlg-rich-val">'+valHtml+'</span></div>';
 }
 
 function xyForecastDialogSectionHtml(title,color,rows){
@@ -11180,41 +11578,123 @@ var bg=xyForecastSafeColor(color,'#8E24AA');
 return '<div class="dlg-rich-sec" style="--dlg-accent:'+bg+'"><div class="dlg-rich-sec-title">'+xyEscapeHtml(title)+'</div>'+rows.join('')+'</div>';
 }
 
-function xyBuildForecastDialogHtml(result){
+function xyBuildForecastDialogHtml(result,decimals){
 if(!result)return '<div class="dlg-rich-head">Forecast Result</div>';
 var html=['<div class="dlg-rich-head">Forecast Result</div>'];
 for(var i=0;i<result.entries.length;i++){
 var entry=result.entries[i];
 var mainRows=[];
-mainRows.push(xyForecastDialogForecastRowHtml(result.sourceAxisLetter,entry.inputValue,result.targetAxisLetter,(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,result.curveColor));
-html.push(xyForecastDialogSectionHtml(result.curveName+' | '+entry.label, result.curveColor, mainRows));
-}
-if(result.includeSecondary){
-for(var ei=0;ei<result.entries.length;ei++){
-var e=result.entries[ei];
-if(e.secondary.length===0){
-html.push(xyForecastDialogSectionHtml('Secondary Axis | '+e.label,'#616161',[xyForecastDialogRowHtml('Forecast','No secondary-axis result available for this forecast value.','#616161')]));
-continue;
-}
-for(var si=0;si<e.secondary.length;si++){
-var sec=e.secondary[si];
-var secRows=[];
-secRows.push(xyForecastDialogForecastRowHtml('X',e.forecastX,'Y',sec.forecastY,sec.color));
-html.push(xyForecastDialogSectionHtml(sec.name+' | '+e.label, sec.color, secRows));
+mainRows.push(xyForecastDialogNumberRowHtml(result.sourceAxisLabel||result.sourceAxisLetter||'X',entry.inputValue,result.curveColor,decimals,false));
+mainRows.push(xyForecastDialogNumberRowHtml(result.targetAxisLabel||result.targetAxisLetter||'Y',(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,result.curveColor,decimals,true));
+if(result.includeSecondary&&Array.isArray(entry.secondary)&&entry.secondary.length>0){
+for(var si=0;si<entry.secondary.length;si++){
+var sec=entry.secondary[si];
+mainRows.push(xyForecastDialogNumberRowHtml(xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length),sec.forecastY,sec.color||result.curveColor,decimals,true));
 }
 }
+html.push(xyForecastDialogSectionHtml(result.curveName, result.curveColor, mainRows));
 }
 return html.join('');
+}
+
+function getForecastDialogDecimals(box){
+var n=parseInt(box&&box.forecastDialogDecimals,10);
+if(!isFinite(n))n=6;
+return Math.max(0,Math.min(10,n));
+}
+
+function isForecastDialogBox(box){
+return !!(box&&box.forecastDialogData&&typeof box.forecastDialogData==='object');
+}
+
+function buildForecastDialogClipboardRows(box){
+if(!isForecastDialogBox(box))return [];
+var result=box.forecastDialogData;
+if(!result||!Array.isArray(result.entries)||result.entries.length===0)return [];
+var decimals=getForecastDialogDecimals(box);
+var rows=[['Source Axis','Source Value','Target Axis','Target Value']];
+for(var i=0;i<result.entries.length;i++){
+var entry=result.entries[i];
+if(!entry)continue;
+var primaryTargetValue=(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY;
+rows.push([
+result.sourceAxisLabel||result.sourceAxisLetter||'X',
+xyForecastFormatNumberWithDecimals(entry.inputValue,decimals),
+result.targetAxisLabel||result.targetAxisLetter||'Y',
+xyForecastFormatNumberWithDecimals(primaryTargetValue,decimals)
+]);
+if(result.includeSecondary){
+if(Array.isArray(entry.secondary)&&entry.secondary.length>0){
+for(var si=0;si<entry.secondary.length;si++){
+var sec=entry.secondary[si];
+if(!sec)continue;
+rows.push([
+(result.xAxisLabel||'X'),
+xyForecastFormatNumberWithDecimals(entry.forecastX,decimals),
+xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length),
+xyForecastFormatNumberWithDecimals(sec.forecastY,decimals)
+]);
+}
+}
+}
+}
+return rows;
+}
+
+function buildForecastDialogClipboardText(box){
+var rows=buildForecastDialogClipboardRows(box);
+if(rows.length===0)return '';
+return rows.map(function(row){
+return row.map(function(cell){
+return String(cell===undefined||cell===null?'':cell).replace(/\\r?\\n/g,' ');
+}).join('\\t');
+}).join('\\n');
+}
+
+function copyForecastDialogBoxData(box){
+if(!isForecastDialogBox(box)){
+document.getElementById('st').textContent='Copy is only available for Forecast Dialog Boxes';
+return;
+}
+var rows=buildForecastDialogClipboardRows(box);
+if(rows.length<=1){
+document.getElementById('st').textContent='Forecast Dialog has no data to copy';
+return;
+}
+var text=buildForecastDialogClipboardText(box);
+function okMsg(){
+document.getElementById('st').textContent='Forecast Dialog copied ('+(rows.length-1)+' row'+((rows.length-1)===1?'':'s')+')';
+}
+try{
+navigator.clipboard.writeText(text).then(okMsg).catch(function(){xyFallbackCopy(text);});
+}catch(e){xyFallbackCopy(text);}
+}
+
+function refreshForecastDialogBoxContent(box){
+if(!box||!box.body||!isForecastDialogBox(box))return;
+var decimals=getForecastDialogDecimals(box);
+box.forecastDialogDecimals=decimals;
+box.text=xyBuildForecastDialogText(box.forecastDialogData,decimals);
+box.body.className='dialog-body dialog-body-rich';
+box.richHtml=xyBuildForecastDialogHtml(box.forecastDialogData,decimals);
+box.body.innerHTML=box.richHtml;
+refreshDialogCopyButton(box);
+syncDialogTextSnapshot(box);
+syncDialogBoxSize(box);
+if(dialogFontBoxId===box.id)syncDialogFontPopup(box);
 }
 
 function xyApplyForecastDialogBoxContent(box,result){
 if(!box||!box.body||!result)return;
 box.readOnly=true;
 box.allowRichEdit=false;
-box.text=xyBuildForecastDialogText(result);
+box.forecastDialogData=cfgClone(result);
+box.forecastDialogDecimals=getForecastDialogDecimals(box);
+box.text=xyBuildForecastDialogText(result,box.forecastDialogDecimals);
 box.body.className='dialog-body dialog-body-rich';
-box.richHtml=xyBuildForecastDialogHtml(result);
+box.richHtml=xyBuildForecastDialogHtml(result,box.forecastDialogDecimals);
 box.body.innerHTML=box.richHtml;
+refreshDialogCopyButton(box);
 refreshDialogEditButton(box);
 applyDialogTextStyle(box);
 }
@@ -11251,8 +11731,9 @@ var axisEl=document.getElementById('xy-forecast-axis');
 var axisKey=(axisEl&&axisEl.value==='y')?'y':'x';
 var sourceAxisLetter=(axisKey==='y')?'Y':'X';
 var targetAxisLetter=(axisKey==='y')?'X':'Y';
-var sourceAxisLabel=(axisKey==='y')?(info.curve.ylabel||'Y'):(info.curve.xlabel||'X');
-var targetAxisLabel=(axisKey==='y')?(info.curve.xlabel||'X'):(info.curve.ylabel||'Y');
+var axisLabels=xyForecastGetDisplayAxisLabels(info.curve,axisKey);
+var sourceAxisLabel=axisLabels.sourceAxisLabel;
+var targetAxisLabel=axisLabels.targetAxisLabel;
 var inputs=xyCollectForecastInputValues();
 if(!inputs)return;
 var includeSecondary=!!(document.getElementById('xy-forecast-secondary')&&document.getElementById('xy-forecast-secondary').checked);
@@ -11288,6 +11769,9 @@ sourceAxisLetter:sourceAxisLetter,
 targetAxisLetter:targetAxisLetter,
 sourceAxisLabel:sourceAxisLabel,
 targetAxisLabel:targetAxisLabel,
+xAxisLabel:axisLabels.xAxisLabel,
+primaryAxisLabel:axisLabels.primaryAxisLabel,
+secondaryAxisLabel:axisLabels.secondaryAxisLabel,
 dataPointCount:info.data.length,
 includeSecondary:includeSecondary,
 entries:entries,
@@ -11701,6 +12185,46 @@ if(inputs[1]&&xySelCols.y)inputs[1].classList.add('xy-col-sel');
 
 function xyAddRow(){xyAddTableRow('','');}
 
+function xyIsDefaultOriginRow(xv,yv){
+var xNum=Number(xv),yNum=Number(yv);
+if(!isFinite(xNum)||!isFinite(yNum))return false;
+return Math.abs(xNum)<=1e-12&&Math.abs(yNum)<=1e-12;
+}
+
+function xyCurveHasOnlyDefaultOriginRow(curve){
+if(!curve||!Array.isArray(curve.data)||curve.data.length!==1)return false;
+var p=curve.data[0];
+if(!p||p.length<2)return false;
+return xyIsDefaultOriginRow(p[0],p[1]);
+}
+
+function xyTableHasOnlyDefaultOriginRow(){
+var tbody=document.getElementById('xy-tbody');
+if(!tbody)return false;
+var rows=tbody.querySelectorAll('tr');
+if(rows.length!==1)return false;
+var inputs=rows[0].querySelectorAll('input');
+if(inputs.length<2)return false;
+return xyIsDefaultOriginRow(parseFloat(inputs[0].value),parseFloat(inputs[1].value));
+}
+
+function xyAppendOrReplaceEditingCurveData(data,axisType,xLabel,yLabel){
+if(xyEditingIdx<0||xyEditingIdx>=xyCurves.length||!Array.isArray(data)||data.length===0)return false;
+var c=xyCurves[xyEditingIdx];
+var replacePlaceholder=xyCurveHasOnlyDefaultOriginRow(c);
+if(replacePlaceholder){
+c.data=data.slice();
+c.axis=axisType||c.axis||'primary';
+c.xlabel=xLabel||c.xlabel||'X';
+c.ylabel=yLabel||c.ylabel||'Y';
+if(yLabel)c.name=yLabel;
+return true;
+}
+var baseData=Array.isArray(c.data)?c.data.slice():[];
+c.data=baseData.concat(data);
+return false;
+}
+
 function xyPasteData(){
 try{
 navigator.clipboard.readText().then(function(text){xyParseAndFill(text);}).catch(function(){
@@ -11735,9 +12259,10 @@ if(!isNaN(xv)&&!isNaN(y1))d1.push([xv,y1]);
 if(!isNaN(xv)&&!isNaN(y2))d2.push([xv,y2]);
 }
 if(d1.length>0){
-var c=xyCurves[xyEditingIdx];
-c.data=d1;c.axis='primary';
+var replacedPrimary=xyAppendOrReplaceEditingCurveData(d1,'primary','X','Y');
+if(replacedPrimary){
 document.getElementById('xy-axis-pri').checked=true;
+}
 }
 if(d2.length>0){
 var idx=xyCurves.length;
@@ -11786,7 +12311,7 @@ for(var ri=0;ri<existingRows.length;ri++){
 var inputs=existingRows[ri].querySelectorAll('input');
 if(inputs[0].value.trim()||inputs[1].value.trim()){hasData=true;break;}
 }
-if(!hasData)tbody.innerHTML='';
+if(!hasData||xyTableHasOnlyDefaultOriginRow())tbody.innerHTML='';
 for(var pi=0;pi<parsed.length;pi++){xyAddTableRow(parsed[pi][0],parsed[pi][1]);}
 xyRenumberRows();
 document.getElementById('st').textContent='Pasted '+parsed.length+' data points';
@@ -12195,9 +12720,11 @@ var refAVal=document.getElementById('rot-cut-ref-a-val');
 var refBVal=document.getElementById('rot-cut-ref-b-val');
 var planeHint=document.getElementById('rot-cut-plane-hint');
 var hidePlaneEl=document.getElementById('rot-cut-hide-plane');
+var resetAllBtn=document.getElementById('rot-cut-reset-all-btn');
 var info=getRotationCutAxisInfo(state.axis);
 if(onEl)onEl.checked=state.on;
 if(controls)controls.style.display=state.on?'block':'none';
+if(resetAllBtn)resetAllBtn.style.display=state.on?'inline-block':'none';
 if(axisEl)axisEl.value=info.axis;
 if(angleEl)angleEl.value=String(state.angle);
 if(angleVal)angleVal.innerHTML=String(state.angle)+'&deg;';
@@ -12807,9 +13334,12 @@ h:b.h,
 text:(b.body?(b.body.innerText||b.body.textContent):b.text)||'',
 richHtml:(b.body?(b.body.innerHTML||''):b.richHtml)||'',
 bodyClass:(b.body&&b.body.className)?b.body.className:'dialog-body',
+textStyle:cfgClone(ensureDialogTextStyle(b)),
 readOnly:!!b.readOnly,
 allowRichEdit:(b.allowRichEdit!==false),
 fontSizePx:getDialogFontSizePx(b),
+forecastDialogData:isForecastDialogBox(b)?cfgClone(b.forecastDialogData):null,
+forecastDialogDecimals:isForecastDialogBox(b)?getForecastDialogDecimals(b):null,
 nodeIdx:(b.nodeIdx!==undefined?b.nodeIdx:-1)
 };
 }).filter(function(b){
@@ -13102,6 +13632,11 @@ var ni=parseInt(src.nodeIdx,10);
 b.nodeIdx=(isFinite(ni)&&ni>=0&&ni<ON.length)?ni:-1;
 }else{
 b.nodeIdx=-1;
+}
+if(src.forecastDialogData&&typeof src.forecastDialogData==='object'){
+b.forecastDialogData=cfgClone(src.forecastDialogData);
+if(src.forecastDialogDecimals!==undefined&&src.forecastDialogDecimals!==null)b.forecastDialogDecimals=Math.max(0,Math.min(10,cfgNumOr(src.forecastDialogDecimals,6)));
+refreshForecastDialogBoxContent(b);
 }
 refreshDialogConnectButton(b);
 refreshDialogEditButton(b);
@@ -13883,4 +14418,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
