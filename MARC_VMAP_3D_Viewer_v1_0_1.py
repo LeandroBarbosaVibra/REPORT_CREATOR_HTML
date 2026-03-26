@@ -1478,11 +1478,14 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
 body{font-family:'Segoe UI',Arial,sans-serif;background:#efefef;color:#333;overflow:hidden}
 #c{width:100vw;height:100vh;position:relative}
 #cv{position:absolute;left:320px;top:0}
-#sb{position:absolute;top:0;left:0;width:320px;height:100%;background:#efefef;border-right:2px solid #ccc;overflow-y:auto;box-shadow:2px 0 10px rgba(0,0,0,0.1)}
+#sb{position:absolute;top:0;left:0;width:320px;height:100%;background:#efefef;border-right:2px solid #ccc;overflow-y:auto;overflow-x:hidden;box-shadow:2px 0 10px rgba(0,0,0,0.1)}
 .p{padding:14px 16px;border-bottom:1px solid #ddd}
 .pt{font-size:12px;font-weight:bold;color:#2196F3;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px}
 .ir{display:flex;justify-content:space-between;padding:4px 0;font-size:11px}
 .il{color:#666}.iv{color:#333;font-weight:600}
+.ir-file-name{align-items:flex-start;gap:8px}
+.ir-file-name .il{flex:0 0 auto;padding-top:1px}
+.ir-file-name .iv{flex:1 1 auto;min-width:0;text-align:right;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.25}
 .lg{text-align:center;padding:15px 16px;background:#ffffff;border-bottom:3px solid #2196F3}
 .lg img{max-width:200px;height:auto;margin-bottom:6px}
 .lg h1{font-size:22px;color:#2196F3;font-weight:bold;margin-bottom:4px}
@@ -1567,6 +1570,7 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .dialog-font-popup .dfp-close{background:#F44336;color:#fff;border:none;border-radius:4px;font-size:10px;font-weight:700;padding:1px 7px;cursor:pointer}
 .dialog-font-popup .dfp-row{display:flex;align-items:center;gap:8px}
 .dialog-font-popup .dfp-row input[type="range"]{flex:1;accent-color:#FB8C00}
+.dialog-font-popup .dfp-row select{flex:1;font-size:10px;padding:3px 4px;border:1px solid #bbb;border-radius:4px;background:#fff;color:#333}
 .dialog-font-popup .dfp-val{font-size:10px;font-weight:700;color:#E65100;min-width:34px;text-align:right}
 .dialog-preview{position:fixed;pointer-events:none;z-index:192;min-width:88px;padding:4px 7px;border:1px dashed rgba(33,150,243,0.75);border-radius:6px;background:rgba(18,22,30,0.28);color:#1976D2;font-size:10px;font-weight:700}
 #dlg-actions{display:none;gap:4px;margin-left:6px}
@@ -1603,7 +1607,21 @@ input[type="range"]{width:100%;accent-color:#2196F3}
     box-shadow:0 4px 15px rgba(0,0,0,0.2);padding:15px 10px;z-index:100;
     display:flex;flex-direction:column;
 }
+#legend-state-meta{position:absolute;top:18px;left:340px;width:130px;padding:6px 7px;border:1px solid rgba(33,150,243,0.5);border-radius:6px;background:rgba(255,255,255,0.92);box-shadow:0 3px 10px rgba(0,0,0,0.12);z-index:101}
+.legend-state-line{font-size:11px;font-weight:700;color:#1B3A57;line-height:1.25}
 #legend-var-title{font-size:13px;font-weight:bold;color:#2196F3;text-align:center;margin-bottom:10px;line-height:1.2}
+.disp-comp-wrap{display:none;margin-top:6px;padding:6px 7px;border:1px solid #d9d9d9;border-radius:6px;background:#fafafa}
+.disp-comp-title{font-size:10px;font-weight:700;color:#555;margin-bottom:5px}
+.disp-comp-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.disp-comp-btn{font-size:9px;font-weight:700;padding:4px 6px;border-radius:4px;cursor:pointer;line-height:1.2;transition:background-color 0.15s ease,border-color 0.15s ease,color 0.15s ease}
+.disp-comp-btn.disp-comp-mag{background:rgba(158,158,158,0.28);border:1px solid rgba(117,117,117,0.55);color:#555}
+.disp-comp-btn.disp-comp-mag.active{background:#9E9E9E;border-color:#757575;color:#fff}
+.disp-comp-btn.disp-comp-x{background:rgba(255,0,0,0.18);border:1px solid rgba(255,0,0,0.42);color:#B71C1C}
+.disp-comp-btn.disp-comp-x.active{background:#FF0000;border-color:#D50000;color:#fff}
+.disp-comp-btn.disp-comp-y{background:rgba(0,204,0,0.18);border:1px solid rgba(0,204,0,0.42);color:#1B5E20}
+.disp-comp-btn.disp-comp-y.active{background:#00CC00;border-color:#009900;color:#fff}
+.disp-comp-btn.disp-comp-z{background:rgba(0,102,255,0.18);border:1px solid rgba(0,102,255,0.42);color:#0D47A1}
+.disp-comp-btn.disp-comp-z.active{background:#0066FF;border-color:#0047B3;color:#fff}
 #legend-content{flex:1;display:flex;gap:6px;align-items:stretch}
 #legend-values{display:flex;flex-direction:column;justify-content:space-between;font-weight:600;color:#333;min-width:55px;text-align:right}
 #legend-values.legend-edit{min-width:78px;text-align:left}
@@ -1788,6 +1806,10 @@ Scroll Wheel: Zoom
 <input type="file" id="xy-file-input" accept=".xlsx,.xlsm,.csv" style="display:none" onchange="xyOnFileSelected(this)">
 
 <!-- Color Legend with intermediate values on LEFT side -->
+<div id="legend-state-meta">
+<div class="legend-state-line" id="legend-inc-line">Inc: -</div>
+<div class="legend-state-line" id="legend-time-line">Time: -</div>
+</div>
 <div id="color-legend">
 <div id="legend-var-title">''' + (default_var if default_var else 'Variable') + '''</div>
 <div id="legend-content">
@@ -1816,7 +1838,7 @@ Scroll Wheel: Zoom
 <span>European FEA Department - v1.0.1</span>
 </div>
 <div class="p"><div class="pt">File Information</div>
-<div class="ir"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
+<div class="ir ir-file-name"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
 <div class="ir"><span class="il">Nodes: </span><span class="iv">''' + str(reader.n_nodes) + '''</span></div>
 <div class="ir"><span class="il">Elements: </span><span class="iv">''' + str(reader.n_elements) + '''</span></div>
 <div class="ir"><span class="il">States: </span><span class="iv">''' + str(len(reader.states)) + '''</span></div>
@@ -1825,6 +1847,15 @@ Scroll Wheel: Zoom
 <div class="p"><div class="pt">Output Available</div>
 <select id="vs" onchange="ovs()">''' + ''.join(['<option value="{0}"{1}>{0}</option>'.format(
     v, ' selected' if v == default_var else '') for v in viewer_outputs]) + '''</select>
+<div id="disp-component-wrap" class="disp-comp-wrap">
+<div class="disp-comp-title">Displacement Component</div>
+<div class="disp-comp-grid">
+<button type="button" id="disp-comp-mag" class="disp-comp-btn disp-comp-mag" onclick="setDisplacementComponent('mag')">Displacement Mag</button>
+<button type="button" id="disp-comp-x" class="disp-comp-btn disp-comp-x" onclick="setDisplacementComponent('x')">Displacement X</button>
+<button type="button" id="disp-comp-y" class="disp-comp-btn disp-comp-y" onclick="setDisplacementComponent('y')">Displacement Y</button>
+<button type="button" id="disp-comp-z" class="disp-comp-btn disp-comp-z" onclick="setDisplacementComponent('z')">Displacement Z</button>
+</div>
+</div>
 <div class="ck" style="margin-top:4px"><input type="checkbox" id="centroid-mode" onchange="tgCentroid(this.checked)"><label>Element Centroid</label><span style="font-size:8px;color:#999;margin-left:4px" id="centroid-info">''' + ('(linear extrapolation from IPs)' if var_locations.get(default_var, 'node') == 'element' else '(extrapolated nodal values)') + '''</span></div>
 </div>
 <div class="p"><div class="pt">Increment Selection</div>
@@ -1924,8 +1955,14 @@ Scroll Wheel: Zoom
 <div class="ck"><input type="checkbox" id="rot-cut-on" onchange="updateRotationCut()"><label>Enable Rotation Cut</label></div>
 <div id="rot-cut-controls" style="display:none;margin:4px 0 2px 0">
 <div class="ck"><label style="font-size:11px;color:#444">Axis:</label><select id="rot-cut-axis" onchange="updateRotationCut()" style="margin-left:6px;width:52px;font-size:10px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"><option value="x" selected>X</option><option value="y">Y</option><option value="z">Z</option></select><span id="rot-cut-plane-hint" style="margin-left:8px;font-size:9px;color:#666">0&deg; =&gt; XY plane</span></div>
-<div class="range-row"><span>Angle:</span><input type="range" id="rot-cut-angle" min="0" max="360" value="0" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-angle-val">0&deg;</span>
-<select id="rot-cut-dir" onchange="updateRotationCut()" title="Rotation direction" style="width:40px;font-size:9px;padding:1px"><option value="+">+</option><option value="-">-</option></select></div>
+<div class="range-row"><span style="color:#1565C0;font-weight:700">Angle:</span><input type="range" id="rot-cut-angle" min="0" max="360" value="0" step="1" oninput="updateRotationCut()" style="accent-color:#1E88E5"><span class="rv" id="rot-cut-angle-val" style="color:#1565C0">0&deg;</span>
+<select id="rot-cut-dir" onchange="updateRotationCut()" title="Rotation direction" style="width:40px;font-size:9px;padding:1px;border:1px solid #1E88E5;border-radius:3px;background:#E3F2FD;color:#0D47A1"><option value="+">+</option><option value="-">-</option></select></div>
+<div style="display:flex;align-items:center;gap:8px;margin:5px 0 2px 0">
+<span style="font-size:10px;color:#555;font-weight:600">Angle 2</span>
+<button type="button" id="rot-cut-angle2-toggle" onclick="toggleRotationCutAngle2()" style="min-width:58px;padding:2px 10px;font-size:10px;border:2px solid #B71C1C;border-radius:4px;background:#F44336;color:#fff;font-weight:700;cursor:pointer">Off</button>
+</div>
+<div class="range-row" id="rot-cut-angle2-row" style="display:none"><span style="color:#2E7D32;font-weight:700">Angle 2:</span><input type="range" id="rot-cut-angle2" min="0" max="360" value="0" step="1" oninput="updateRotationCut()" style="accent-color:#43A047"><span class="rv" id="rot-cut-angle2-val" style="color:#2E7D32">0&deg;</span>
+<select id="rot-cut-dir2" onchange="updateRotationCut()" title="Rotation direction 2" style="width:40px;font-size:9px;padding:1px;border:1px solid #43A047;border-radius:3px;background:#E8F5E9;color:#1B5E20"><option value="+">+</option><option value="-">-</option></select></div>
 <div style="font-size:10px;color:#666;margin:6px 0 2px 0">Move Reference</div>
 <div class="range-row"><span id="rot-cut-ref-a-lbl">Y ref:</span><input type="range" id="rot-cut-ref-a" min="0" max="100" value="50" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-ref-a-val">50%</span></div>
 <div class="range-row"><span id="rot-cut-ref-b-lbl">Z ref:</span><input type="range" id="rot-cut-ref-b" min="0" max="100" value="50" step="1" oninput="updateRotationCut()"><span class="rv" id="rot-cut-ref-b-val">50%</span></div>
@@ -1955,9 +1992,9 @@ Scroll Wheel: Zoom
 <button class="leg-btn" onclick="resetLegRange()">Reset</button>
 </div>
 <div id="leg-data-info" style="font-size:10px;color:#888;margin-top:3px">Data range: ''' + cr_min + ''' ~ ''' + cr_max + '''</div>
-<div style="display:flex;align-items:center;gap:4px;margin-top:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:bold">Font:</span><input type="range" id="leg-font-size" min="7" max="20" step="1" value="12" oninput="setLegFontSize(this.value)" style="width:82px"><span id="leg-font-size-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:18px;text-align:right">12</span>
-<span style="font-size:10px;font-weight:bold;margin-left:6px">Levels:</span><select id="leg-levels" onchange="setLegLevels(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10" selected>10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option></select></div>
-<div style="display:flex;align-items:center;gap:4px;margin-top:4px"><span style="font-size:10px;font-weight:bold">Format:</span><select id="leg-format" onchange="setLegFormat(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="exp" selected>Exponential</option><option value="float">Floating</option></select><span id="leg-fdec-wrap" style="display:none;align-items:center;gap:3px;margin-left:2px"><span style="font-size:10px;font-weight:bold">Dec:</span><select id="leg-fdec" onchange="setLegFloatDecimals(this.value)" style="width:56px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6" selected>6</option><option value="7">7</option><option value="8">8</option></select></span></div>
+<div style="display:flex;align-items:center;gap:4px;margin-top:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:bold">Font:</span><input type="range" id="leg-font-size" min="7" max="20" step="1" value="14" oninput="setLegFontSize(this.value)" style="width:82px"><span id="leg-font-size-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:18px;text-align:right">14</span>
+<span style="font-size:10px;font-weight:bold;margin-left:6px">Levels:</span><select id="leg-levels" onchange="setLegLevels(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12" selected>12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option></select></div>
+<div style="display:flex;align-items:center;gap:4px;margin-top:4px"><span style="font-size:10px;font-weight:bold">Format:</span><select id="leg-format" onchange="setLegFormat(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="exp">Exponential</option><option value="float" selected>Floating</option></select><span id="leg-fdec-wrap" style="display:inline-flex;align-items:center;gap:3px;margin-left:2px"><span style="font-size:10px;font-weight:bold">Dec:</span><select id="leg-fdec" onchange="setLegFloatDecimals(this.value)" style="width:56px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select></span></div>
 <div style="display:flex;justify-content:flex-end;margin-top:3px"><button class="leg-btn" onclick="legendDefault()">Default</button></div>
 <div style="margin-top:6px;border-top:1px solid #e0e0e0;padding-top:4px">
 <div class="ck"><input type="checkbox" id="dc" checked onchange="tgd(this.checked)"><label>Discrete Legend</label></div>
@@ -2057,15 +2094,15 @@ Scroll Wheel: Zoom
 <input type="range" id="xy-pref-font" min="8" max="24" step="1" value="10" oninput="xySetPrefFont(this.value)">
 </div>
 <div class="xyf-row">
-<div class="xyf-lbl"><span>Format</span><span class="xyf-val" id="xy-format-val">Exponential</span></div>
+<div class="xyf-lbl"><span>Format</span><span class="xyf-val" id="xy-format-val">Floating</span></div>
 <select id="xy-val-format" onchange="xySetValueFormat(this.value)" style="width:100%;font-size:10px;padding:3px 4px;border:1px solid #bbb;border-radius:4px">
-<option value="exp" selected>Exponential</option>
-<option value="float">Floating</option>
+<option value="exp">Exponential</option>
+<option value="float" selected>Floating</option>
 </select>
 </div>
 <div class="xyf-row" id="xy-float-levels-row">
-<div class="xyf-lbl"><span>Levels</span><span class="xyf-val" id="xy-float-levels-val">4</span></div>
-<input type="range" id="xy-float-levels" min="0" max="8" step="1" value="4" oninput="xySetFloatLevels(this.value)">
+<div class="xyf-lbl"><span>Levels</span><span class="xyf-val" id="xy-float-levels-val">2</span></div>
+<input type="range" id="xy-float-levels" min="0" max="8" step="1" value="2" oninput="xySetFloatLevels(this.value)">
 </div>
 </div>
 </div>
@@ -2291,10 +2328,73 @@ if(!v)return {};
 if(!OUT_STATE_CACHE[v])OUT_STATE_CACHE[v]={};
 return OUT_STATE_CACHE[v];
 }
+function normalizeDisplacementComponent(mode){
+var m=String(mode||'mag').toLowerCase();
+return (m==='x'||m==='y'||m==='z'||m==='mag')?m:'mag';
+}
+function getCurrentVarDisplayName(){
+if(currentVar==='Displacement'){
+return DISP_COMPONENT_LABELS[normalizeDisplacementComponent(displacementComponent)]||'Displacement Mag';
+}
+return currentVar||'Variable';
+}
+function refreshOutputVariableLabels(){
+var label=getCurrentVarDisplayName();
+var titleEl=document.getElementById('legend-var-title');
+if(titleEl){
+titleEl.textContent=label;
+var keepSingleLine=(label==='Displacement Mag.');
+titleEl.style.fontSize=keepSingleLine?'11px':'13px';
+titleEl.style.whiteSpace=keepSingleLine?'nowrap':'normal';
+titleEl.style.lineHeight=keepSingleLine?'1.1':'1.2';
+}
+var clnEl=document.getElementById('cln');
+if(clnEl)clnEl.textContent=label;
+}
+function refreshDisplacementComponentUi(){
+var wrap=document.getElementById('disp-component-wrap');
+var show=(currentVar==='Displacement');
+if(wrap)wrap.style.display=show?'block':'none';
+var mode=normalizeDisplacementComponent(displacementComponent);
+['mag','x','y','z'].forEach(function(key){
+var btn=document.getElementById('disp-comp-'+key);
+if(!btn)return;
+btn.classList.toggle('active',show&&key===mode);
+});
+refreshOutputVariableLabels();
+}
+function setDisplacementComponent(mode){
+var nextMode=normalizeDisplacementComponent(mode);
+if(nextMode===displacementComponent&&currentVar==='Displacement'){
+refreshDisplacementComponentUi();
+return;
+}
+displacementComponent=nextMode;
+if(OUT_STATE_CACHE&&OUT_STATE_CACHE.Displacement)OUT_STATE_CACHE.Displacement={};
+AD=ensureVarStateCache(currentVar);
+legendAutoResetPending=true;
+refreshDisplacementComponentUi();
+if(currentVar==='Displacement'&&cst){
+asc();
+document.getElementById('st').textContent='Output component changed to: '+getCurrentVarDisplayName();
+}else if(currentVar==='Displacement'){
+document.getElementById('st').textContent='Output changed to: '+getCurrentVarDisplayName()+' - Select an increment';
+}
+}
 function isVirtualDisplacementVar(v){
 return !!(VIRTUAL_DISPLACEMENT_OUTPUT&&v==='Displacement'&&(!OUT_STATE_INDEX||!OUT_STATE_INDEX[v]||OUT_STATE_INDEX[v].length===0));
 }
 function getVarStateIds(v){
+if(v==='Displacement'){
+var dispIds=[];
+for(var di=0;di<SL.length;di++){
+var ds=SL[di];
+if(!ds||ds.id===undefined||ds.id===null)continue;
+if(!STATE_NODE_TAG_MAP||!STATE_NODE_TAG_MAP[ds.id])continue;
+dispIds.push(ds.id);
+}
+if(dispIds.length>0)return dispIds;
+}
 if(isVirtualDisplacementVar(v)){
 var ids=[];
 for(var i=0;i<SL.length;i++){
@@ -2317,10 +2417,33 @@ if(s&&String(s.id)===sidTxt)return s;
 }
 return null;
 }
+function formatLegendStateTime(v){
+var num=Number(v);
+if(!isFinite(num))return '-';
+return num.toFixed(5).replace(/\.?0+$/,'');
+}
+function updateLegendStateMeta(info){
+var incEl=document.getElementById('legend-inc-line');
+var timeEl=document.getElementById('legend-time-line');
+if(!incEl||!timeEl)return;
+if(!info){
+incEl.textContent='Inc: -';
+timeEl.textContent='Time: -';
+return;
+}
+var incVal='-';
+if(info.increment!==undefined&&info.increment!==null&&String(info.increment)!==''){
+incVal=String(info.increment);
+}
+var timeTxt=formatLegendStateTime(info.time);
+incEl.textContent='Inc: '+incVal;
+timeEl.textContent='Time: '+timeTxt;
+}
 function buildVirtualDisplacementStateData(sid){
 var disp=getStateDisplacements(sid);
 if(!disp||!ON||ON.length===0)return null;
-var mags=new Array(ON.length);
+var mode=normalizeDisplacementComponent(displacementComponent);
+var vals=new Array(ON.length);
 var vmin=Infinity,vmax=-Infinity;
 for(var i=0;i<ON.length;i++){
 var d=disp[i]||[0,0,0];
@@ -2330,11 +2453,18 @@ var dz=Number(d[2]);
 if(!isFinite(dx))dx=0;
 if(!isFinite(dy))dy=0;
 if(!isFinite(dz))dz=0;
-var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
-if(!isFinite(mag))mag=0;
-mags[i]=mag;
-if(mag<vmin)vmin=mag;
-if(mag>vmax)vmax=mag;
+var val=0;
+if(mode==='x')val=dx;
+else if(mode==='y')val=dy;
+else if(mode==='z')val=dz;
+else{
+val=Math.sqrt(dx*dx+dy*dy+dz*dz);
+if(!isFinite(val))val=0;
+}
+if(!isFinite(val))val=0;
+vals[i]=val;
+if(val<vmin)vmin=val;
+if(val>vmax)vmax=val;
 }
 if(!isFinite(vmin)||!isFinite(vmax)){
 vmin=0;
@@ -2343,9 +2473,9 @@ vmax=1;
 var colorMax=vmax;
 if(Math.abs(colorMax-vmin)<1e-10)colorMax=vmin+1.0;
 var inv=1/Math.max(1e-30,colorMax-vmin);
-var colors=new Array(mags.length);
-for(var mi=0;mi<mags.length;mi++){
-var nv=(mags[mi]-vmin)*inv;
+var colors=new Array(vals.length);
+for(var mi=0;mi<vals.length;mi++){
+var nv=(vals[mi]-vmin)*inv;
 if(!isFinite(nv))nv=0;
 colors[mi]=Math.max(0,Math.min(1,nv));
 }
@@ -2380,8 +2510,8 @@ var sum=0,count=0;
 if(nodeList&&nodeList.length){
 for(var ni=0;ni<nodeList.length;ni++){
 var idx=nodeList[ni];
-if(idx===undefined||idx===null||idx<0||idx>=mags.length)continue;
-var mv=mags[idx];
+if(idx===undefined||idx===null||idx<0||idx>=vals.length)continue;
+var mv=vals[idx];
 if(!isFinite(mv))continue;
 sum+=mv;
 count++;
@@ -2428,7 +2558,7 @@ function getStateData(v,sid){
 if(!v||!sid)return null;
 var cache=ensureVarStateCache(v);
 if(cache[sid])return cache[sid];
-if(isVirtualDisplacementVar(v)){
+if(v==='Displacement'){
 try{
 var virtualData=buildVirtualDisplacementStateData(sid);
 if(virtualData){
@@ -2533,13 +2663,16 @@ let harmonicPerfActive=false,harmonicPerfPrevEdgeMode=null,harmonicPerfLastTable
 let harmonicLegendSyncDone=false;
 let zoomBoxMode=false,zoomBoxStart=null,zoomBoxEnd=null,zoomBoxDiv=null;
 let curMin=CR[0],curMax=CR[1];
-let legFontSize=12;
+let legFontSize=14;
 let valueInfoFontSize=12;
 let dynamicLegend=false;
 let legendAutoResetPending=false;
 let dataMin=CR[0],dataMax=CR[1];
-let discreteMode=true,N_DISC=10;
-let legendValueFormat='exp',legendFloatDecimals=6;
+let discreteMode=true,N_DISC=12;
+let legendValueFormat='float',legendFloatDecimals=3;
+let legendColorMapId='1';
+const DISP_COMPONENT_LABELS={mag:'Displacement Mag.',x:'Displacement X',y:'Displacement Y',z:'Displacement Z'};
+let displacementComponent='mag';
 let legendCustomValues=null,legendCustomColors=null;
 let legendEditMode=false;
 let legendEditFocusValue=-1,legendEditFocusColor=-1;
@@ -2547,10 +2680,10 @@ let legendOutsideDblInit=false;
 let rawColors=null;
 let gifWorkerUrl=null;
 let axScene,axCamera,showAxes=true;
-let cutPlanes={x:{on:false,pos:50,dir:'+'},y:{on:false,pos:50,dir:'+'},z:{on:false,pos:50,dir:'+'},rotation:{on:false,axis:'x',angle:0,dir:'+',refA:50,refB:50,hidePlane:false}};
+let cutPlanes={x:{on:false,pos:50,dir:'+'},y:{on:false,pos:50,dir:'+'},z:{on:false,pos:50,dir:'+'},rotation:{on:false,axis:'x',angle:0,dir:'+',angle2On:false,angle2:0,dir2:'+',refA:50,refB:50,hidePlane:false}};
 let meshBBox={xmin:0,xmax:1,ymin:0,ymax:1,zmin:0,zmax:1};
 let axisCutPlaneMeshes={x:null,y:null,z:null},axisCutPlaneEdges={x:null,y:null,z:null};
-let rotationCutLine=null,rotationCutPlaneMesh=null,rotationCutPlaneEdges=null;
+let rotationCutLine=null,rotationCutPlaneMesh=null,rotationCutPlaneEdges=null,rotationCutPlaneMesh2=null,rotationCutPlaneEdges2=null;
 let vrfEnabled=false,vrfLo=0,vrfHi=1;
 let xyAppliedRange={xmin:'auto',xmax:'auto',ymin:'auto',ymax:'auto'};
 let xySecAppliedRange={ymin:'auto',ymax:'auto'};
@@ -2567,8 +2700,8 @@ let xyAnimIndex=-1;
 let xyAnimInfoVisible=true;
 let xyTitleFontSize=10;
 let xyValuesFontSize=9;
-let xyValueFormat='exp';
-let xyFloatLevels=4;
+let xyValueFormat='float';
+let xyFloatLevels=2;
 let xyForecastLastResult=null;
 let xyFontPopupInit=false;
 let xySelCols={x:false,y:false};
@@ -2689,7 +2822,9 @@ text:text,
 x:clientX,
 y:clientY,
 kind:(meta&&meta.kind)?meta.kind:'node',
-elemIdx:(meta&&meta.elemIdx!==undefined&&meta.elemIdx!==null)?meta.elemIdx:null
+elemIdx:(meta&&meta.elemIdx!==undefined&&meta.elemIdx!==null)?meta.elemIdx:null,
+rawValue:(meta&&meta.rawValue!==undefined&&meta.rawValue!==null)?meta.rawValue:null,
+idText:(meta&&meta.idText!==undefined&&meta.idText!==null)?String(meta.idText):''
 };
 }
 
@@ -2800,7 +2935,7 @@ var isElem=target&&target.type==='elem';
 var rid=isElem?(EIDS[target.idx]!==undefined?EIDS[target.idx]:target.idx):(NIDS[target.idx]!==undefined?NIDS[target.idx]:target.idx);
 var idPrefix=isElem?'E':'N';
 var cls=isElem?'pn-elem':'pn-node';
-return '<span style="color:#FFCDD2;font-size:0.85em">'+prefix+'</span><br><span class="'+cls+'">'+idPrefix+rid+'</span> <span class="pn-val">'+target.value.toExponential(3)+'</span>';
+return '<span style="color:#FFCDD2;font-size:0.85em">'+prefix+'</span><br><span class="'+cls+'">'+idPrefix+rid+'</span> <span class="pn-val">'+formatLegendDrivenValue(target.value,'N/A')+'</span>';
 }
 
 function ensureLegendExtremeVisual(which){
@@ -3734,7 +3869,7 @@ function ensureDialogFontPopup(){
 if(dialogFontPopupEl)return dialogFontPopupEl;
 var pop=document.createElement('div');
 pop.className='dialog-font-popup';
-pop.innerHTML='<div class="dfp-head"><span>Font Size</span><button type="button" class="dfp-close">X</button></div><div class="dfp-row"><label for="dialog-font-size-range" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Font</label><input type="range" id="dialog-font-size-range" min="8" max="36" step="1" value="11"><span id="dialog-font-size-val" class="dfp-val">11</span></div><div class="dfp-row" id="dialog-forecast-decimals-row" style="display:none;margin-top:8px"><label for="dialog-forecast-decimals-range" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Decimals</label><input type="range" id="dialog-forecast-decimals-range" min="0" max="10" step="1" value="6"><span id="dialog-forecast-decimals-val" class="dfp-val">6</span></div>';
+pop.innerHTML='<div class="dfp-head"><span>Font Size</span><button type="button" class="dfp-close">X</button></div><div class="dfp-row"><label for="dialog-font-size-range" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Font</label><input type="range" id="dialog-font-size-range" min="8" max="36" step="1" value="11"><span id="dialog-font-size-val" class="dfp-val">11</span></div><div class="dfp-row" id="dialog-forecast-format-row" style="display:none;margin-top:8px"><label for="dialog-forecast-format" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Format</label><select id="dialog-forecast-format"><option value="float">Floating</option><option value="exp">Exponential</option></select></div><div class="dfp-row" id="dialog-forecast-decimals-row" style="display:none;margin-top:8px"><label for="dialog-forecast-decimals-range" style="font-size:10px;font-weight:700;color:#555;min-width:54px">Decimals</label><input type="range" id="dialog-forecast-decimals-range" min="0" max="10" step="1" value="6"><span id="dialog-forecast-decimals-val" class="dfp-val">6</span></div>';
 document.body.appendChild(pop);
 pop.querySelector('.dfp-close').onclick=function(ev){ev.stopPropagation();closeDialogFontPopup();};
 var rangeEl=pop.querySelector('#dialog-font-size-range');
@@ -3743,6 +3878,14 @@ ev.stopPropagation();
 var box=getDialogById(dialogFontBoxId);
 if(!box)return;
 setDialogBoxFontSize(box,this.value);
+};
+var fmtSel=pop.querySelector('#dialog-forecast-format');
+if(fmtSel)fmtSel.onchange=function(ev){
+ev.stopPropagation();
+var box=getDialogById(dialogFontBoxId);
+if(!box||!isForecastDialogBox(box))return;
+box.forecastDialogFormat=(this.value==='exp')?'exp':'float';
+refreshForecastDialogBoxContent(box);
 };
 var decRangeEl=pop.querySelector('#dialog-forecast-decimals-range');
 if(decRangeEl)decRangeEl.oninput=function(ev){
@@ -3780,12 +3923,17 @@ var rangeEl=dialogFontPopupEl.querySelector('#dialog-font-size-range');
 var valEl=dialogFontPopupEl.querySelector('#dialog-font-size-val');
 if(rangeEl&&String(rangeEl.value)!==String(n))rangeEl.value=String(n);
 if(valEl)valEl.textContent=String(n);
+var fmtRow=dialogFontPopupEl.querySelector('#dialog-forecast-format-row');
+var fmtSel=dialogFontPopupEl.querySelector('#dialog-forecast-format');
 var decRow=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-row');
 var decRangeEl=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-range');
 var decValEl=dialogFontPopupEl.querySelector('#dialog-forecast-decimals-val');
 var showForecast=isForecastDialogBox(box);
+if(fmtRow)fmtRow.style.display=showForecast?'flex':'none';
 if(decRow)decRow.style.display=showForecast?'flex':'none';
 if(showForecast){
+var fmt=getForecastDialogFormat(box);
+if(fmtSel&&fmtSel.value!==fmt)fmtSel.value=fmt;
 var d=getForecastDialogDecimals(box);
 if(decRangeEl&&String(decRangeEl.value)!==String(d))decRangeEl.value=String(d);
 if(decValEl)decValEl.textContent=String(d);
@@ -3971,7 +4119,7 @@ var p=dialogCanvasPosFromClient(clientX,clientY);
 if(!p)return null;
 var container=document.getElementById('dialog-box-container');
 if(!container)return null;
-var box={id:dialogIdSeed++,x:p.x+12,y:p.y+12,w:120,h:30,text:'Text',nodeIdx:-1,editing:false,readOnly:false,allowRichEdit:true,textStyle:{bold:false,italic:false,underline:false,color:'#222222'},fontSizePx:dialogFontSize,savedRange:null,richHtml:null,forecastDialogData:null,forecastDialogDecimals:6,el:null,body:null,tools:null,linkBtn:null,copyBtn:null,fontBtn:null,editBtn:null};
+var box={id:dialogIdSeed++,x:p.x+12,y:p.y+12,w:120,h:30,text:'Text',nodeIdx:-1,editing:false,readOnly:false,allowRichEdit:true,textStyle:{bold:false,italic:false,underline:false,color:'#222222'},fontSizePx:dialogFontSize,savedRange:null,richHtml:null,forecastDialogData:null,forecastDialogFormat:'float',forecastDialogDecimals:6,el:null,body:null,tools:null,linkBtn:null,copyBtn:null,fontBtn:null,editBtn:null};
 var el=document.createElement('div');
 el.className='dialog-box';
 el.setAttribute('data-did',String(box.id));
@@ -4882,7 +5030,8 @@ if(ei!==undefined&&ei<centroidRawColors.length){
 hoveredElemIdx=ei;
 var cv=centroidRawColors[ei];
 var realVal=centroidDataMin+cv*(centroidDataMax-centroidDataMin);
-showValueTooltip('E'+(EIDS[ei]||ei)+': '+realVal.toExponential(3),e.clientX,e.clientY,{kind:'elem',elemIdx:ei});
+var elemIdTxt='E'+(EIDS[ei]||ei);
+showValueTooltip(elemIdTxt+': '+formatLegendDrivenValue(realVal,'N/A'),e.clientX,e.clientY,{kind:'elem',elemIdx:ei,rawValue:realVal,idText:elemIdTxt});
 // Position highlight at face centroid
 var cx=(pickNodes[tri[0]][0]+pickNodes[tri[1]][0]+pickNodes[tri[2]][0])/3;
 var cy=(pickNodes[tri[0]][1]+pickNodes[tri[1]][1]+pickNodes[tri[2]][1])/3;
@@ -4899,7 +5048,8 @@ var nearest=tri[0];if(d1<d0&&d1<d2)nearest=tri[1];else if(d2<d0&&d2<d1)nearest=t
 var nv=rawColors?rawColors[nearest]:curColors[nearest];
 if(nv!==undefined&&nv!==null){
 var realVal=dataMin+nv*(dataMax-dataMin);
-showValueTooltip('N'+(NIDS[nearest]||nearest)+': '+realVal.toExponential(3),e.clientX,e.clientY,{kind:'node',elemIdx:visibleFaceElemIdx[fi]});
+var nodeIdTxt='N'+(NIDS[nearest]||nearest);
+showValueTooltip(nodeIdTxt+': '+formatLegendDrivenValue(realVal,'N/A'),e.clientX,e.clientY,{kind:'node',elemIdx:visibleFaceElemIdx[fi],rawValue:realVal,idText:nodeIdTxt});
 if(highlightSphere&&nearest<pickNodes.length){highlightSphere.position.set(pickNodes[nearest][0],pickNodes[nearest][1],pickNodes[nearest][2]);highlightSphere.visible=true;highlightedNodeIdx=nearest;}
 }else{hideValueTooltip();if(highlightSphere)highlightSphere.visible=false;highlightedNodeIdx=-1;}
 }
@@ -5056,6 +5206,7 @@ legendOutsideDblInit=true;
 safeViewerInitStep('increment list',function(){pss();});
 var ssEl=document.getElementById('ss');
 if(ssEl&&ssEl.options&&ssEl.options.length<=1)safeViewerInitStep('increment list fallback',function(){pssFallback();});
+safeViewerInitStep('output ui',function(){refreshDisplacementComponentUi();});
 safeViewerInitStep('legend values',function(){ulv(curMin,curMax);});
 safeViewerInitStep('legend format controls',function(){updateLegendFormatControls();});
 safeViewerInitStep('animation range labels',function(){ugrl();});
@@ -5527,7 +5678,7 @@ var idHeader='ID - Node';
 if(allElem)idHeader='ID - Element';
 var html='<table id="table-form-table"><thead><tr><th data-col="0">'+idHeader+'</th><th data-col="1">Value ('+currentVar+')</th></tr></thead><tbody>';
 rows.forEach(function(r,rowIdx){
-var valStr=r.value!==null?r.value.toExponential(4):'N/A';
+var valStr=(r.value!==null)?formatLegendDrivenValue(r.value,'N/A'):'N/A';
 var textColor=(r.value!==null)?getContrastColor(r.bgColor):'#333';
 var rKind=r.isElem?'E':'N';
 var rIdx=(r.srcIdx!==undefined&&r.srcIdx!==null)?r.srcIdx:-1;
@@ -5952,10 +6103,10 @@ lbl.className='pinned-label';
 lbl.style.fontSize=valueInfoFontSize+'px';
 var nv=rawColors?rawColors[nodeIdx]:curColors[nodeIdx];
 var realVal=(nv!==undefined&&nv!==null)?dataMin+nv*(dataMax-dataMin):0;
-lbl.innerHTML='<span class="pn-node">N'+(NIDS[nodeIdx]||nodeIdx)+'</span> <span class="pn-val">'+realVal.toExponential(3)+'</span>';
+lbl.innerHTML='<span class="pn-node">N'+(NIDS[nodeIdx]||nodeIdx)+'</span> <span class="pn-val">'+formatLegendDrivenValue(realVal,'N/A')+'</span>';
 container.appendChild(lbl);
 pinnedLabels.push(lbl);
-document.getElementById('st').textContent='Pinned N'+(NIDS[nodeIdx]||nodeIdx)+': '+realVal.toExponential(3)+' ('+pinnedNodes.length+' pinned)';
+document.getElementById('st').textContent='Pinned N'+(NIDS[nodeIdx]||nodeIdx)+': '+formatLegendDrivenValue(realVal,'N/A')+' ('+pinnedNodes.length+' pinned)';
 showTableFormIfMultiple();
 }
 
@@ -5991,7 +6142,7 @@ pinnedMarkers[i].position.set(dispNodes[ni][0],dispNodes[ni][1],dispNodes[ni][2]
 // Update value text
 var nv=rawColors?rawColors[ni]:(curColors?curColors[ni]:null);
 var realVal=(nv!==undefined&&nv!==null)?dataMin+nv*(dataMax-dataMin):0;
-pinnedLabels[i].innerHTML='<span class="pn-node">N'+(NIDS[ni]||ni)+'</span> <span class="pn-val">'+realVal.toExponential(3)+'</span>';
+pinnedLabels[i].innerHTML='<span class="pn-node">N'+(NIDS[ni]||ni)+'</span> <span class="pn-val">'+formatLegendDrivenValue(realVal,'N/A')+'</span>';
 pinnedLabels[i].style.fontSize=valueInfoFontSize+'px';
 }
 if(pinnedElems.length>0)updatePinnedElemValues();
@@ -6055,7 +6206,7 @@ if(!sp)continue;
 if(hasCuts&&!isPointVisibleByCuts(dispNodes[ni],cuts))continue;
 var nv=rawColors?rawColors[ni]:(curColors?curColors[ni]:null);
 var realVal=(nv!==undefined&&nv!==null)?dataMin+nv*(dataMax-dataMin):0;
-var txt='N'+(NIDS[ni]||ni)+': '+realVal.toExponential(3);
+var txt='N'+(NIDS[ni]||ni)+': '+formatLegendDrivenValue(realVal,'N/A');
 ctx.font='600 '+valueInfoFontSize+'px Arial';
 var tw=ctx.measureText(txt).width;
 var pad=5,bx=sp.x+10,by=sp.y-8;
@@ -6074,7 +6225,7 @@ var nodeW=ctx.measureText('N'+(NIDS[ni]||ni)).width;
 ctx.fillStyle='#4FC3F7';ctx.font='600 '+(valueInfoFontSize*0.9)+'px Arial';
 ctx.fillText('N'+(NIDS[ni]||ni),bx,by+pad);
 ctx.fillStyle='#FFD54F';ctx.font='600 '+valueInfoFontSize+'px Arial';
-ctx.fillText(realVal.toExponential(3),bx+nodeW+4,by+pad);
+ctx.fillText(formatLegendDrivenValue(realVal,'N/A'),bx+nodeW+4,by+pad);
 }
 ctx.restore();
 }
@@ -6138,10 +6289,10 @@ lbl.className='pinned-label';
 lbl.style.fontSize=valueInfoFontSize+'px';
 var cv=centroidRawColors&&elemIdx<centroidRawColors.length?centroidRawColors[elemIdx]:null;
 var realVal=(cv!==null&&cv!==undefined)?centroidDataMin+cv*(centroidDataMax-centroidDataMin):0;
-lbl.innerHTML='<span class="pn-elem">E'+(EIDS[elemIdx]||elemIdx)+'</span> <span class="pn-val">'+realVal.toExponential(3)+'</span>';
+lbl.innerHTML='<span class="pn-elem">E'+(EIDS[elemIdx]||elemIdx)+'</span> <span class="pn-val">'+formatLegendDrivenValue(realVal,'N/A')+'</span>';
 container.appendChild(lbl);
 pinnedElemLabels.push(lbl);
-document.getElementById('st').textContent='Pinned E'+(EIDS[elemIdx]||elemIdx)+': '+realVal.toExponential(3)+' ('+(pinnedNodes.length+pinnedElems.length)+' pinned)';
+document.getElementById('st').textContent='Pinned E'+(EIDS[elemIdx]||elemIdx)+': '+formatLegendDrivenValue(realVal,'N/A')+' ('+(pinnedNodes.length+pinnedElems.length)+' pinned)';
 showTableFormIfMultiple();
 }
 
@@ -6160,7 +6311,7 @@ if(ctr)pinnedElemMarkers[i].position.set(ctr.x,ctr.y,ctr.z);
 // Update value
 var cv=centroidRawColors&&ei<centroidRawColors.length?centroidRawColors[ei]:null;
 var realVal=(cv!==null&&cv!==undefined)?centroidDataMin+cv*(centroidDataMax-centroidDataMin):0;
-pinnedElemLabels[i].innerHTML='<span class="pn-elem">E'+(EIDS[ei]||ei)+'</span> <span class="pn-val">'+realVal.toExponential(3)+'</span>';
+pinnedElemLabels[i].innerHTML='<span class="pn-elem">E'+(EIDS[ei]||ei)+'</span> <span class="pn-val">'+formatLegendDrivenValue(realVal,'N/A')+'</span>';
 pinnedElemLabels[i].style.fontSize=valueInfoFontSize+'px';
 }
 }
@@ -6221,7 +6372,7 @@ if(!isPointVisibleByCuts([mp.x,mp.y,mp.z],cuts))continue;
 }
 var cv=centroidRawColors&&ei<centroidRawColors.length?centroidRawColors[ei]:null;
 var realVal=(cv!==null&&cv!==undefined)?centroidDataMin+cv*(centroidDataMax-centroidDataMin):0;
-var txt='E'+(EIDS[ei]||ei)+': '+realVal.toExponential(3);
+var txt='E'+(EIDS[ei]||ei)+': '+formatLegendDrivenValue(realVal,'N/A');
 ctx.font='600 '+valueInfoFontSize+'px Arial';
 var tw=ctx.measureText(txt).width;
 var pad=5,bx=sp.x+10,by=sp.y-8;
@@ -6240,7 +6391,7 @@ var elemW=ctx.measureText('E'+(EIDS[ei]||ei)).width;
 ctx.fillStyle='#81C784';ctx.font='600 '+(valueInfoFontSize*0.9)+'px Arial';
 ctx.fillText('E'+(EIDS[ei]||ei),bx,by+pad);
 ctx.fillStyle='#FFD54F';ctx.font='600 '+valueInfoFontSize+'px Arial';
-ctx.fillText(realVal.toExponential(3),bx+elemW+4,by+pad);
+ctx.fillText(formatLegendDrivenValue(realVal,'N/A'),bx+elemW+4,by+pad);
 }
 ctx.restore();
 }
@@ -6418,13 +6569,77 @@ cm(getRenderNodes(),drawColors);
 }
 }
 function clamp01(v){return Math.max(0,Math.min(1,v));}
-function legendWarp(t){return Math.pow(clamp01(t),1.45);} // more blue bands than green/yellow
-function legendBaseColor(t){
-var tw=legendWarp(t);
+function normalizeLegendColorMapId(v){
+return (String(v)==='2')?'2':'1';
+}
+function legendClassicWarp(t){return Math.pow(clamp01(t),1.45);}
+function getColormap1ContinuousColor(t){
+var tw=legendClassicWarp(t);
 var h=(1-tw)*0.7;
 var c=new THREE.Color();
 c.setHSL(h,1,0.5);
 return c;
+}
+function getColormap1DiscreteHex(levelIdx,levelCount){
+var n=parseInt(levelCount,10);
+if(!isFinite(n))n=N_DISC;
+if(n<2)n=2;
+if(n>15)n=15;
+var idx=Math.max(0,Math.min(n-1,parseInt(levelIdx,10)||0));
+var den=Math.max(1,n-1);
+var tBand=1-(idx/den);
+if(n>=5&&idx===0)tBand=1.00;
+else if(n>=5&&idx===1)tBand=0.95;
+else if(n>=5&&idx===2)tBand=0.90;
+else if(n>=5&&idx===3)tBand=0.80;
+else if(n>=5&&idx===4)tBand=0.68;
+else if(n===4&&idx===0)tBand=1.00;
+else if(n===4&&idx===1)tBand=0.92;
+else if(n===4&&idx===2)tBand=0.80;
+else if(n===4&&idx===3)tBand=0.68;
+else if(n===3&&idx===0)tBand=1.00;
+else if(n===3&&idx===1)tBand=0.80;
+else if(n===3&&idx===2)tBand=0.68;
+else if(n===2&&idx===0)tBand=1.00;
+else if(n===2&&idx===1)tBand=0.75;
+return '#'+getColormap1ContinuousColor(tBand).getHexString();
+}
+// Extracted from the local Mentat installation:
+// C:\Program Files\MSC.Software\Marc\2020.1.0\mentat2020.1\bin\whitemap -> colormap_002 contour ramp.
+const MENTAT_COLORMAP2_HEX=['#0000ff','#1200ed','#2300dc','#3500ca','#4600b9','#5800a7','#6a0095','#7b0084','#8d0072','#9e0061','#b0004f','#c2003d','#d3002c','#e5001a','#f60009','#ff0900','#ff1a00','#ff2c00','#ff3d00','#ff4f00','#ff6100','#ff7200','#ff8400','#ff9500','#ffa700','#ffb900','#ffca00','#ffdc00','#ffed00','#ffff00'];
+function getMentatColormap2Pos(t){
+return clamp01(t)*(MENTAT_COLORMAP2_HEX.length-1);
+}
+function getMentatColormap2DiscreteHex(levelIdx,levelCount){
+var n=parseInt(levelCount,10);
+if(!isFinite(n))n=N_DISC;
+if(n<2)n=2;
+if(n>15)n=15;
+var idx=Math.max(0,Math.min(n-1,parseInt(levelIdx,10)||0));
+var den=Math.max(1,n-1);
+var t=1-(idx/den);
+var pos=Math.round(getMentatColormap2Pos(t));
+pos=Math.max(0,Math.min(MENTAT_COLORMAP2_HEX.length-1,pos));
+return MENTAT_COLORMAP2_HEX[pos];
+}
+function getMentatColormap2ContinuousColor(t){
+var pos=getMentatColormap2Pos(t);
+var lo=Math.floor(pos);
+var hi=Math.min(MENTAT_COLORMAP2_HEX.length-1,lo+1);
+var a=pos-lo;
+var c1=new THREE.Color(MENTAT_COLORMAP2_HEX[lo]);
+if(hi===lo)return c1;
+var c2=new THREE.Color(MENTAT_COLORMAP2_HEX[hi]);
+return c1.lerp(c2,a);
+}
+function getLegendContinuousColorForMap(mapId,t){
+return normalizeLegendColorMapId(mapId)==='2'?getMentatColormap2ContinuousColor(t):getColormap1ContinuousColor(t);
+}
+function getLegendDiscreteHexForMap(mapId,levelIdx,levelCount){
+return normalizeLegendColorMapId(mapId)==='2'?getMentatColormap2DiscreteHex(levelIdx,levelCount):getColormap1DiscreteHex(levelIdx,levelCount);
+}
+function legendBaseColor(t){
+return getLegendContinuousColorForMap(legendColorMapId,t);
 }
 function getBaseLegendHex(t){return '#'+legendBaseColor(t).getHexString();}
 function buildLegendGradientCSS(direction){
@@ -6462,29 +6677,8 @@ if(!isFinite(n))n=N_DISC;
 if(n<2)n=2;
 if(n>15)n=15;
 var cols=[];
-var den=Math.max(1,n-1);
 for(var i=0;i<n;i++){
-var tBand=1-(i/den);
-cols.push(getBaseLegendHex(tBand));
-}
-if(n>=5){
-cols[0]=getBaseLegendHex(1.00);
-cols[1]=getBaseLegendHex(0.95);
-cols[2]=getBaseLegendHex(0.90);
-cols[3]=getBaseLegendHex(0.80);
-cols[4]=getBaseLegendHex(0.68);
-}else if(n===4){
-cols[0]=getBaseLegendHex(1.00);
-cols[1]=getBaseLegendHex(0.92);
-cols[2]=getBaseLegendHex(0.80);
-cols[3]=getBaseLegendHex(0.68);
-}else if(n===3){
-cols[0]=getBaseLegendHex(1.00);
-cols[1]=getBaseLegendHex(0.80);
-cols[2]=getBaseLegendHex(0.68);
-}else if(n===2){
-cols[0]=getBaseLegendHex(1.00);
-cols[1]=getBaseLegendHex(0.75);
+cols.push(getLegendDiscreteHexForMap(legendColorMapId,i,n));
 }
 return cols;
 }
@@ -6501,6 +6695,30 @@ if(dec>8)dec=8;
 return Number(v).toFixed(dec);
 }
 return v.toExponential(2);
+}
+function formatLegendDrivenValue(v,nullText){
+var txt=(nullText===undefined||nullText===null)?'N/A':String(nullText);
+var num=Number(v);
+if(!isFinite(num))return txt;
+return formatLegendNumber(num);
+}
+function refreshValueTooltipFormat(){
+if(valTooltipInvalidUntilMove||!lastValueTooltipInfo)return;
+var tt=document.getElementById('val-tooltip');
+if(!tt||tt.style.display==='none')return;
+if(!lastValueTooltipInfo.idText)return;
+var num=Number(lastValueTooltipInfo.rawValue);
+if(!isFinite(num))return;
+var txt=lastValueTooltipInfo.idText+': '+formatLegendDrivenValue(num,'N/A');
+tt.textContent=txt;
+lastValueTooltipInfo.text=txt;
+}
+function refreshLegendDrivenValueDisplays(){
+refreshValueTooltipFormat();
+if(pinnedNodes.length>0||pinnedElems.length>0)updatePinnedValues();
+if(tableFormVisible)updateTableForm();
+if(legendMaxMode||legendMinMode)updateLegendExtremaTargets();
+if(measMode!=='off'&&measNodes.length>=2)updateMeasurement();
 }
 function updateLegendFormatControls(){
 var fmtSel=document.getElementById('leg-format');
@@ -6531,6 +6749,7 @@ ulv(curMin,curMax);
 updGrad();
 updCb();
 if(cst&&AD[cst])rebuildCurrentMeshColors();
+refreshLegendDrivenValueDisplays();
 document.getElementById('st').textContent='Legend format: '+(legendValueFormat==='float'?'Floating':'Exponential');
 }
 function setLegFloatDecimals(n){
@@ -6545,6 +6764,7 @@ ulv(curMin,curMax);
 updGrad();
 updCb();
 if(cst&&AD[cst])rebuildCurrentMeshColors();
+refreshLegendDrivenValueDisplays();
 document.getElementById('st').textContent='Legend floating decimals: '+d;
 }
 function setLegFontSize(sz){
@@ -6676,6 +6896,9 @@ if(idx<0||idx>=N_DISC)return '#808080';
 if(hasCustomLegend()){
 var hx=normalizeHexColor(legendCustomColors[idx]);
 if(hx)return hx;
+}
+if(discreteMode){
+return getLegendDiscreteHexForMap(legendColorMapId,idx,N_DISC);
 }
 var den=Math.max(1,N_DISC-1);
 var tBand=1-(idx/den);
@@ -6812,14 +7035,15 @@ legendCustomColors=null;
 legendEditMode=false;
 legendEditFocusValue=-1;
 legendEditFocusColor=-1;
-legendValueFormat='exp';
-legendFloatDecimals=6;
-N_DISC=10;
-legFontSize=12;
+legendValueFormat='float';
+legendFloatDecimals=3;
+legendColorMapId='1';
+N_DISC=12;
+legFontSize=14;
 updateLegendFormatControls();
-var lvlSel=document.getElementById('leg-levels');if(lvlSel)lvlSel.value='10';
-var fs=document.getElementById('leg-font-size');if(fs)fs.value='12';
-var fv=document.getElementById('leg-font-size-val');if(fv)fv.textContent='12';
+var lvlSel=document.getElementById('leg-levels');if(lvlSel)lvlSel.value='12';
+var fs=document.getElementById('leg-font-size');if(fs)fs.value='14';
+var fv=document.getElementById('leg-font-size-val');if(fv)fv.textContent='14';
 updateLegendRangeInputs();
 ulv(curMin,curMax);
 updGrad();
@@ -6904,16 +7128,40 @@ if(cut)cuts.push(cut);
 });
 var rotCut=getRotationCutData();
 if(rotCut&&rotCut.enabled){
+if(rotCut.state.angle2On&&rotCut.secondary){
+cuts.push({
+type:'rotation-split',
+side:'positive',
+normal:[rotCut.primary.clipNormal.x,rotCut.primary.clipNormal.y,rotCut.primary.clipNormal.z],
+constant:rotCut.primary.constant,
+splitDir:[rotCut.splitDir.x,rotCut.splitDir.y,rotCut.splitDir.z],
+refPoint:[rotCut.refPoint.x,rotCut.refPoint.y,rotCut.refPoint.z]
+});
+cuts.push({
+type:'rotation-split',
+side:'negative',
+normal:[rotCut.secondary.clipNormal.x,rotCut.secondary.clipNormal.y,rotCut.secondary.clipNormal.z],
+constant:rotCut.secondary.constant,
+splitDir:[rotCut.splitDir.x,rotCut.splitDir.y,rotCut.splitDir.z],
+refPoint:[rotCut.refPoint.x,rotCut.refPoint.y,rotCut.refPoint.z]
+});
+}else{
 cuts.push({
 type:'rotation',
 normal:[rotCut.clipNormal.x,rotCut.clipNormal.y,rotCut.clipNormal.z],
 constant:rotCut.constant
 });
 }
+}
 return cuts;
 }
 function getCutSignedDistance(p,cut){
 if(!p||!cut||!cut.normal)return -Infinity;
+if(cut.type==='rotation-split'&&cut.splitDir&&cut.refPoint){
+var side=((p[0]-cut.refPoint[0])*cut.splitDir[0])+((p[1]-cut.refPoint[1])*cut.splitDir[1])+((p[2]-cut.refPoint[2])*cut.splitDir[2]);
+if(cut.side==='positive'&&side<-1e-10)return Infinity;
+if(cut.side==='negative'&&side>1e-10)return Infinity;
+}
 return (p[0]*cut.normal[0])+(p[1]*cut.normal[1])+(p[2]*cut.normal[2])+cut.constant;
 }
 function isPointVisibleByCuts(p,cuts){
@@ -7052,7 +7300,7 @@ if(c&&c.on)parts.push(a+':'+c.pos+':'+c.dir);
 else parts.push(a+':off');
 }
 var rc=sanitizeRotationCutState(cutPlanes.rotation||{});
-if(rc.on)parts.push('rot:'+rc.axis+':'+rc.angle+':'+rc.dir+':'+rc.refA+':'+rc.refB);
+if(rc.on)parts.push('rot:'+rc.axis+':'+rc.angle+':'+rc.dir+':'+(rc.angle2On?'on':'off')+':'+rc.angle2+':'+rc.dir2+':'+rc.refA+':'+rc.refB);
 else parts.push('rot:off');
 return parts.join('|');
 }
@@ -7513,6 +7761,12 @@ document.getElementById('st').textContent='Legend range reset to data range';
 function gc(t){
 t=clamp01(t);
 if(discreteMode){
+if(!hasCustomLegend()){
+var idx=Math.floor((1-t)*N_DISC);
+if(idx<0)idx=0;
+if(idx>=N_DISC)idx=N_DISC-1;
+return new THREE.Color(getLegendDiscreteHexForMap(legendColorMapId,idx,N_DISC));
+}
 t=Math.floor(t*N_DISC)/N_DISC;
 }
 return legendBaseColor(t);
@@ -7602,15 +7856,15 @@ sel.appendChild(o);
 function ovs(){
 const sel=document.getElementById('vs');
 currentVar=sel.value;
-document.getElementById('legend-var-title').textContent=currentVar;
-document.getElementById('cln').textContent=currentVar;
 AD=ensureVarStateCache(currentVar);
 cst=null;rawColors=null;centroidRawColors=null;
 dataMin=0;dataMax=1;curMin=0;curMax=1;
 legendAutoResetPending=true;
+refreshDisplacementComponentUi();
 updateLegendRangeInputs();
 document.getElementById('leg-data-info').textContent='Data range: select an increment';
 document.getElementById('ss').value='';
+updateLegendStateMeta(null);
 // Update centroid info label for new variable
 var loc=VAR_LOCS[currentVar];
 if(centroidMode){
@@ -7622,7 +7876,7 @@ cn=ON.slice();cm(getRenderNodes(),null);
 ulv(0,1);
 updGrad();
 updCb();
-document.getElementById('st').textContent='Output changed to: '+currentVar+' - Select an increment';
+document.getElementById('st').textContent='Output changed to: '+getCurrentVarDisplayName()+' - Select an increment';
 }
 
 function osc(){
@@ -7630,11 +7884,13 @@ const sel=document.getElementById('ss');
 const sid=sel.value;
 if(!sid){
 cst=null;cn=ON.slice();cm(getRenderNodes(),null);
+updateLegendStateMeta(null);
 document.getElementById('st').textContent='Undeformed mesh';
 return;}
 const sd=getStateData(currentVar,sid);
 if(!sd){
 cst=null;cn=ON.slice();cm(getRenderNodes(),null);
+updateLegendStateMeta(null);
 document.getElementById('st').textContent='Increment data not available for '+sid;
 return;
 }
@@ -7685,6 +7941,7 @@ if(!cst){document.getElementById('st').textContent='Select increment first';retu
 setScaleFactorToUI(getScaleFactorFromUI());
 const sd=AD[cst]||getStateData(currentVar,cst);
 if(!sd){document.getElementById('st').textContent='Increment data unavailable';return;}
+updateLegendStateMeta({increment:(sd.increment!==undefined?sd.increment:null),time:(sd.time!==undefined?sd.time:null)});
 rawColors=sd.colors?sd.colors.slice():null;
 centroidRawColors=sd.centroid_colors?sd.centroid_colors.slice():null;
 // Update legend range FIRST so cm() uses correct curMin/curMax for centroid mapping
@@ -7697,7 +7954,7 @@ for(let i=0;i<ON.length;i++){
 const o=ON[i],d=(sdNodes[i]||o);
 cn.push([o[0]+(d[0]-o[0])*cs,o[1]+(d[1]-o[1])*cs,o[2]+(d[2]-o[2])*cs]);}
 cm(getRenderNodes(),drawColors);
-document.getElementById('st').textContent='Scale '+scaleText(cs)+'x applied ('+currentVar+(centroidMode?' - Centroid':'')+')';
+document.getElementById('st').textContent='Scale '+scaleText(cs)+'x applied ('+getCurrentVarDisplayName()+(centroidMode?' - Centroid':'')+')';
 }else{cm(ON,drawColors);
 document.getElementById('st').textContent='No displacement data';}
 // Update active measurement for new increment
@@ -8377,8 +8634,8 @@ var p1=cn[n1],p2=cn[n2];
 var dx=p2[0]-p1[0],dy=p2[1]-p1[1],dz=p2[2]-p1[2];
 var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
 lines=['Distance Measurement','Node A: '+n1+'  Node B: '+n2,
-'\u0394X = '+dx.toExponential(4),'\u0394Y = '+dy.toExponential(4),
-'\u0394Z = '+dz.toExponential(4),'Magnitude = '+mag.toExponential(4)];
+'\u0394X = '+formatLegendDrivenValue(dx,'N/A'),'\u0394Y = '+formatLegendDrivenValue(dy,'N/A'),
+'\u0394Z = '+formatLegendDrivenValue(dz,'N/A'),'Magnitude = '+formatLegendDrivenValue(mag,'N/A')];
 }else if(measMode==='angle'){
 var n1=measNodes[0],n2=measNodes[1],n3=measNodes[2];
 var p1=cn[n1],p2=cn[n2],p3=cn[n3];
@@ -8391,7 +8648,7 @@ var cosA=(m1>1e-20&&m2>1e-20)?dot/(m1*m2):0;
 cosA=Math.max(-1,Math.min(1,cosA));
 var angleDeg=Math.acos(cosA)*180/Math.PI;
 lines=['Angle Measurement','Nodes: '+n1+' - '+n2+' - '+n3,
-'Angle at '+n2+' = '+angleDeg.toFixed(2)+'\u00B0'];
+'Angle at '+n2+' = '+formatLegendDrivenValue(angleDeg,'N/A')+'\u00B0'];
 }
 var lineH=14,pad=8;
 var boxH=lines.length*lineH+pad*2;
@@ -9408,11 +9665,15 @@ function hideRotationCutVisualsForCapture(){
 var state={
 line:!!(rotationCutLine&&rotationCutLine.visible),
 plane:!!(rotationCutPlaneMesh&&rotationCutPlaneMesh.visible),
-edges:!!(rotationCutPlaneEdges&&rotationCutPlaneEdges.visible)
+edges:!!(rotationCutPlaneEdges&&rotationCutPlaneEdges.visible),
+plane2:!!(rotationCutPlaneMesh2&&rotationCutPlaneMesh2.visible),
+edges2:!!(rotationCutPlaneEdges2&&rotationCutPlaneEdges2.visible)
 };
 if(rotationCutLine)rotationCutLine.visible=false;
 if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=false;
 if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=false;
+if(rotationCutPlaneMesh2)rotationCutPlaneMesh2.visible=false;
+if(rotationCutPlaneEdges2)rotationCutPlaneEdges2.visible=false;
 return state;
 }
 
@@ -9421,6 +9682,8 @@ if(!state)return;
 if(rotationCutLine)rotationCutLine.visible=!!state.line;
 if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=!!state.plane;
 if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=!!state.edges;
+if(rotationCutPlaneMesh2)rotationCutPlaneMesh2.visible=!!state.plane2;
+if(rotationCutPlaneEdges2)rotationCutPlaneEdges2.visible=!!state.edges2;
 }
 
 function drawScreenshotLegend(ctx,w,h){
@@ -9895,6 +10158,21 @@ xyRefreshAnimInfoButton();
 drawPlot();
 }
 
+function xyGetInfoBoxFontSpec(){
+var titlePx=Math.max(8,Math.min(24,xyTitleFontSize||10));
+var bodyPx=Math.max(7,Math.min(20,xyValuesFontSize||9));
+var pad=Math.max(6,Math.round(bodyPx*0.7));
+var titleLineH=Math.max(12,Math.round(titlePx*1.2));
+var bodyLineH=Math.max(12,Math.round(bodyPx*1.25));
+return {
+titleFont:'bold '+titlePx+'px Arial',
+bodyFont:bodyPx+'px Arial',
+pad:pad,
+titleLineH:titleLineH,
+bodyLineH:bodyLineH
+};
+}
+
 function xyDrawAnimHighlightInfo(ctx,ml,mt,pw,ph,items,occupied){
 if(!occupied)occupied=[];
 if(!xyAnimInfoVisible||xyAnimIndex<0||!items||items.length===0)return;
@@ -9912,16 +10190,17 @@ var p=it.point;
 var cCol=c.color||CURVE_COLORS[ii%CURVE_COLORS.length];
 var ylbl=(c.axis==='secondary')?ylblR:ylblL;
 var lines=['Pin: '+c.name+(c.axis==='secondary'?' (R)':''),xlbl+': '+xyFmt(p[0]),ylbl+': '+xyFmt(p[1])];
+var fontSpec=xyGetInfoBoxFontSpec();
 ctx.save();
-var pad=6,lineH=12;
-ctx.font='bold 10px Arial';
+var pad=fontSpec.pad;
+ctx.font=fontSpec.titleFont;
 var maxW=ctx.measureText(lines[0]).width;
-ctx.font='10px Arial';
+ctx.font=fontSpec.bodyFont;
 for(var li=1;li<lines.length;li++){
 var w=ctx.measureText(lines[li]).width;
 if(w>maxW)maxW=w;
 }
-var boxW=maxW+pad*2,boxH=lines.length*lineH+pad*2;
+var boxW=maxW+pad*2,boxH=pad*2+fontSpec.titleLineH+Math.max(0,lines.length-1)*fontSpec.bodyLineH;
 var place=xyPlaceInfoBox(it.x,it.y,boxW,boxH,ml,mt,pw,ph,occupied);
 occupied.push(place);
 xyDrawInfoConnector(ctx,it.x,it.y,place,xyHexToRgba(cCol,0.9));
@@ -9932,11 +10211,11 @@ roundRectPath(ctx,place.x,place.y,boxW,boxH,4);
 ctx.fillStyle='#5D4037';
 ctx.textAlign='left';
 ctx.textBaseline='top';
-ctx.font='bold 10px Arial';
+ctx.font=fontSpec.titleFont;
 ctx.fillText(lines[0],place.x+pad,place.y+pad);
-ctx.font='10px Arial';
+ctx.font=fontSpec.bodyFont;
 for(var li=1;li<lines.length;li++){
-ctx.fillText(lines[li],place.x+pad,place.y+pad+li*lineH);
+ctx.fillText(lines[li],place.x+pad,place.y+pad+fontSpec.titleLineH+(li-1)*fontSpec.bodyLineH);
 }
 ctx.restore();
 }
@@ -9982,13 +10261,26 @@ if(d<bestDist){bestDist=d;bestPt=p;bestCurve=c;bestCol=col;}
 if(bestPt&&bestCurve){
 var xn=document.getElementById('xy-xname');
 var yn=document.getElementById('xy-yname');
+var syn=document.getElementById('xy-syname');
 var xlbl=xn?xn.value||'X':'X';
-var ylbl=yn?yn.value||'Y':'Y';
-tt.innerHTML='<b>'+bestCurve.name+'</b>'+(bestCurve.axis==='secondary'?' (R)':'')+'<br>'+xlbl+': '+xyFmt(bestPt[0])+'<br>'+ylbl+': '+xyFmt(bestPt[1]);
+var ylbl=(bestCurve.axis==='secondary')?(syn?syn.value||'Y (R)':'Y (R)'):(yn?yn.value||'Y':'Y');
+var fontSpec=xyGetInfoBoxFontSpec();
+var titlePx=Math.max(8,Math.min(24,xyTitleFontSize||10));
+var bodyPx=Math.max(7,Math.min(20,xyValuesFontSize||9));
+var gap=Math.max(2,Math.round(bodyPx*0.2));
+tt.style.padding=fontSpec.pad+'px';
+tt.style.fontSize=bodyPx+'px';
+tt.style.lineHeight=fontSpec.bodyLineH+'px';
+tt.style.borderRadius=Math.max(4,Math.round(bodyPx*0.45))+'px';
+tt.innerHTML='<div style="font-size:'+titlePx+'px;line-height:'+fontSpec.titleLineH+'px;font-weight:700;margin-bottom:'+gap+'px"><b>'+bestCurve.name+'</b>'+(bestCurve.axis==='secondary'?' (R)':'')+'</div><div>'+xlbl+': '+xyFmt(bestPt[0])+'</div><div>'+ylbl+': '+xyFmt(bestPt[1])+'</div>';
 tt.style.background=bestCol;
 tt.style.display='block';
 var tx=e.clientX-rect.left+12,ty=e.clientY-rect.top-10;
-if(tx+130>rect.width)tx=e.clientX-rect.left-140;
+var tw=tt.offsetWidth||130;
+var th=tt.offsetHeight||40;
+if(tx+tw>rect.width-4)tx=Math.max(4,e.clientX-rect.left-tw-12);
+if(ty+th>rect.height-4)ty=Math.max(4,rect.height-th-4);
+if(ty<4)ty=Math.min(rect.height-th-4,e.clientY-rect.top+12);
 tt.style.left=tx+'px';tt.style.top=ty+'px';
 }else{tt.style.display='none';}
 }
@@ -10125,9 +10417,11 @@ ctx.lineWidth=1;
 ctx.beginPath();ctx.moveTo(px,mt);ctx.lineTo(px,mt+ph);ctx.stroke();
 ctx.beginPath();ctx.moveTo(ml,py);ctx.lineTo(ml+pw,py);ctx.stroke();
 ctx.setLineDash([]);
-ctx.beginPath();ctx.arc(px,py,4.5,0,Math.PI*2);
-ctx.fillStyle='#fff';ctx.fill();
-ctx.strokeStyle=col;ctx.lineWidth=2;ctx.stroke();
+ctx.beginPath();ctx.arc(px,py,6.2,0,Math.PI*2);
+ctx.strokeStyle=xyHexToRgba(col,0.35);ctx.lineWidth=4;ctx.stroke();
+ctx.beginPath();ctx.arc(px,py,4.6,0,Math.PI*2);
+ctx.fillStyle=col;ctx.fill();
+ctx.strokeStyle='#fff';ctx.lineWidth=1.6;ctx.stroke();
 ctx.restore();
 var xn=document.getElementById('xy-xname');
 var yn=document.getElementById('xy-yname');
@@ -10136,16 +10430,17 @@ var xlbl=xn?xn.value||'X':'X';
 var ylbl=(c.axis==='secondary')?(syn?syn.value||'Y (R)':'Y (R)'):(yn?yn.value||'Y':'Y');
 var title=c.name+(c.axis==='secondary'?' (R)':'');
 var lines=[title,xlbl+': '+xyFmt(x),ylbl+': '+xyFmt(y)];
+var fontSpec=xyGetInfoBoxFontSpec();
 ctx.save();
-var pad=6,lineH=12;
-ctx.font='bold 10px Arial';
+var pad=fontSpec.pad;
+ctx.font=fontSpec.titleFont;
 var maxW=ctx.measureText(lines[0]).width;
-ctx.font='10px Arial';
+ctx.font=fontSpec.bodyFont;
 for(var li=1;li<lines.length;li++){
 var w=ctx.measureText(lines[li]).width;
 if(w>maxW)maxW=w;
 }
-var boxW=maxW+pad*2,boxH=lines.length*lineH+pad*2;
+var boxW=maxW+pad*2,boxH=pad*2+fontSpec.titleLineH+Math.max(0,lines.length-1)*fontSpec.bodyLineH;
 var place=xyPlaceInfoBox(px,py,boxW,boxH,ml,mt,pw,ph,occupied);
 occupied.push(place);
 xyDrawInfoConnector(ctx,px,py,place,xyHexToRgba(col,0.85));
@@ -10153,9 +10448,9 @@ ctx.fillStyle='rgba(255,255,255,0.75)';
 ctx.strokeStyle=xyHexToRgba(col,0.6);ctx.lineWidth=1;
 roundRectPath(ctx,place.x,place.y,boxW,boxH,4);
 ctx.fillStyle='#333';ctx.textAlign='left';ctx.textBaseline='top';
-ctx.font='bold 10px Arial';ctx.fillText(lines[0],place.x+pad,place.y+pad);
-ctx.font='10px Arial';
-for(var li=1;li<lines.length;li++){ctx.fillText(lines[li],place.x+pad,place.y+pad+li*lineH);}
+ctx.font=fontSpec.titleFont;ctx.fillText(lines[0],place.x+pad,place.y+pad);
+ctx.font=fontSpec.bodyFont;
+for(var li=1;li<lines.length;li++){ctx.fillText(lines[li],place.x+pad,place.y+pad+fontSpec.titleLineH+(li-1)*fontSpec.bodyLineH);}
 ctx.restore();
 }
 }
@@ -10532,7 +10827,7 @@ if(syStepEl)syStepEl.value='20';
 xySecUserRange={ymin:'-180',ymax:'180'};
 xySecAppliedRange={ymin:'-180',ymax:'180'};
 xyValueFormat='float';
-xyFloatLevels=5;
+xyFloatLevels=2;
 xyUpdateFontControls();
 xyRenderSheetTabs();
 xyEditingIdx=-1;
@@ -11113,22 +11408,20 @@ if(s==='-0')s='0';
 return s;
 }
 
-function xyForecastFormatNumberWithDecimals(v,decimals){
+function getForecastDialogFormat(box){
+return (box&&box.forecastDialogFormat==='exp')?'exp':'float';
+}
+
+function formatForecastDialogValue(v,format,decimals){
 if(v===undefined||v===null||!isFinite(v))return String(v);
 var d=parseInt(decimals,10);
 if(!isFinite(d))d=6;
 d=Math.max(0,Math.min(10,d));
-if(v===0)return d>0?Number(0).toFixed(d):'0';
-var av=Math.abs(v);
-if(av>=1e4||av<1e-4)return Number(v).toExponential(d);
+if((format==='exp')||String(format).toLowerCase()==='exponential'){
+return Number(v).toExponential(d);
+}
 var s=Number(v).toFixed(d);
-if(d>0){
-while(s.indexOf('.')>=0&&(s.charAt(s.length-1)==='0'||s.charAt(s.length-1)==='.')){
-if(s.charAt(s.length-1)==='.'){s=s.slice(0,-1);break;}
-s=s.slice(0,-1);
-}
-}
-if(s==='-0')s='0';
+if(Number(s)===0)return d>0?('0.'+'0'.repeat(d)):'0';
 return s;
 }
 
@@ -11496,10 +11789,10 @@ var fg=xyForecastTextColorForBg(bg);
 return '<div class="xy-result-row"><span class="xy-result-chip" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span>'+xyEscapeHtml(value)+'</span></div>';
 }
 
-function xyForecastResultForecastRowHtml(sourceAxisLabel,sourceValue,targetAxisLabel,targetValue,color,decimals){
+function xyForecastResultForecastRowHtml(sourceAxisLabel,sourceValue,targetAxisLabel,targetValue,color){
 var bg=xyForecastSafeColor(color,'#8E24AA');
 var fg=xyForecastTextColorForBg(bg);
-return '<div class="xy-result-row"><span class="xy-result-chip" style="background:'+bg+';color:'+fg+'">Forecast</span><span>'+xyEscapeHtml(sourceAxisLabel)+' = '+xyForecastFormatNumberWithDecimals(sourceValue,decimals)+' | <span class="xy-result-value-highlight">'+xyEscapeHtml(targetAxisLabel)+' = '+xyForecastFormatNumberWithDecimals(targetValue,decimals)+'</span></span></div>';
+return '<div class="xy-result-row"><span class="xy-result-chip" style="background:'+bg+';color:'+fg+'">Forecast</span><span>'+xyEscapeHtml(sourceAxisLabel)+' = '+xyForecastFormatNumber(sourceValue)+' | <span class="xy-result-value-highlight">'+xyEscapeHtml(targetAxisLabel)+' = '+xyForecastFormatNumber(targetValue)+'</span></span></div>';
 }
 
 function xyForecastResultBlockHtml(title,color,rows){
@@ -11539,7 +11832,7 @@ html.push(xyForecastResultBlockHtml(sec.name, sec.color, secRows));
 body.innerHTML=html.join('');
 }
 
-function xyBuildForecastDialogText(result,decimals){
+function xyBuildForecastDialogText(result,format,decimals){
 if(!result)return 'Forecast result unavailable';
 var lines=[];
 lines.push('Forecast Result');
@@ -11547,12 +11840,12 @@ for(var i=0;i<result.entries.length;i++){
 var entry=result.entries[i];
 lines.push('');
 lines.push(result.curveName);
-lines.push((result.sourceAxisLabel||result.sourceAxisLetter||'X')+': '+xyForecastFormatNumberWithDecimals(entry.inputValue,decimals));
-lines.push((result.targetAxisLabel||result.targetAxisLetter||'Y')+': '+xyForecastFormatNumberWithDecimals((result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,decimals));
+lines.push((result.sourceAxisLabel||result.sourceAxisLetter||'X')+': '+formatForecastDialogValue(entry.inputValue,format,decimals));
+lines.push((result.targetAxisLabel||result.targetAxisLetter||'Y')+': '+formatForecastDialogValue((result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,format,decimals));
 if(result.includeSecondary&&Array.isArray(entry.secondary)&&entry.secondary.length>0){
 for(var si=0;si<entry.secondary.length;si++){
 var sec=entry.secondary[si];
-lines.push(xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length)+': '+xyForecastFormatNumberWithDecimals(sec.forecastY,decimals));
+lines.push(xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length)+': '+formatForecastDialogValue(sec.forecastY,format,decimals));
 }
 }
 }
@@ -11565,10 +11858,10 @@ var fg=xyForecastTextColorForBg(bg);
 return '<div class="dlg-rich-row" style="--dlg-accent:'+bg+'"><span class="dlg-rich-tag" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span class="dlg-rich-val">'+xyEscapeHtml(value)+'</span></div>';
 }
 
-function xyForecastDialogNumberRowHtml(label,value,color,decimals,highlight){
+function xyForecastDialogNumberRowHtml(label,value,color,format,decimals,highlight){
 var bg=xyForecastSafeColor(color,'#8E24AA');
 var fg=xyForecastTextColorForBg(bg);
-var valHtml=xyEscapeHtml(xyForecastFormatNumberWithDecimals(value,decimals));
+var valHtml=xyEscapeHtml(formatForecastDialogValue(value,format,decimals));
 if(highlight)valHtml='<span class="dlg-rich-result">'+valHtml+'</span>';
 return '<div class="dlg-rich-row" style="--dlg-accent:'+bg+'"><span class="dlg-rich-tag" style="background:'+bg+';color:'+fg+'">'+xyEscapeHtml(label)+'</span><span class="dlg-rich-val">'+valHtml+'</span></div>';
 }
@@ -11578,18 +11871,18 @@ var bg=xyForecastSafeColor(color,'#8E24AA');
 return '<div class="dlg-rich-sec" style="--dlg-accent:'+bg+'"><div class="dlg-rich-sec-title">'+xyEscapeHtml(title)+'</div>'+rows.join('')+'</div>';
 }
 
-function xyBuildForecastDialogHtml(result,decimals){
+function xyBuildForecastDialogHtml(result,format,decimals){
 if(!result)return '<div class="dlg-rich-head">Forecast Result</div>';
 var html=['<div class="dlg-rich-head">Forecast Result</div>'];
 for(var i=0;i<result.entries.length;i++){
 var entry=result.entries[i];
 var mainRows=[];
-mainRows.push(xyForecastDialogNumberRowHtml(result.sourceAxisLabel||result.sourceAxisLetter||'X',entry.inputValue,result.curveColor,decimals,false));
-mainRows.push(xyForecastDialogNumberRowHtml(result.targetAxisLabel||result.targetAxisLetter||'Y',(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,result.curveColor,decimals,true));
+mainRows.push(xyForecastDialogNumberRowHtml(result.sourceAxisLabel||result.sourceAxisLetter||'X',entry.inputValue,result.curveColor,format,decimals,false));
+mainRows.push(xyForecastDialogNumberRowHtml(result.targetAxisLabel||result.targetAxisLetter||'Y',(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY,result.curveColor,format,decimals,true));
 if(result.includeSecondary&&Array.isArray(entry.secondary)&&entry.secondary.length>0){
 for(var si=0;si<entry.secondary.length;si++){
 var sec=entry.secondary[si];
-mainRows.push(xyForecastDialogNumberRowHtml(xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length),sec.forecastY,sec.color||result.curveColor,decimals,true));
+mainRows.push(xyForecastDialogNumberRowHtml(xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length),sec.forecastY,sec.color||result.curveColor,format,decimals,true));
 }
 }
 html.push(xyForecastDialogSectionHtml(result.curveName, result.curveColor, mainRows));
@@ -11611,6 +11904,7 @@ function buildForecastDialogClipboardRows(box){
 if(!isForecastDialogBox(box))return [];
 var result=box.forecastDialogData;
 if(!result||!Array.isArray(result.entries)||result.entries.length===0)return [];
+var format=getForecastDialogFormat(box);
 var decimals=getForecastDialogDecimals(box);
 var rows=[['Source Axis','Source Value','Target Axis','Target Value']];
 for(var i=0;i<result.entries.length;i++){
@@ -11619,9 +11913,9 @@ if(!entry)continue;
 var primaryTargetValue=(result.targetAxisLetter==='X')?entry.forecastX:entry.forecastY;
 rows.push([
 result.sourceAxisLabel||result.sourceAxisLetter||'X',
-xyForecastFormatNumberWithDecimals(entry.inputValue,decimals),
+formatForecastDialogValue(entry.inputValue,format,decimals),
 result.targetAxisLabel||result.targetAxisLetter||'Y',
-xyForecastFormatNumberWithDecimals(primaryTargetValue,decimals)
+formatForecastDialogValue(primaryTargetValue,format,decimals)
 ]);
 if(result.includeSecondary){
 if(Array.isArray(entry.secondary)&&entry.secondary.length>0){
@@ -11630,9 +11924,9 @@ var sec=entry.secondary[si];
 if(!sec)continue;
 rows.push([
 (result.xAxisLabel||'X'),
-xyForecastFormatNumberWithDecimals(entry.forecastX,decimals),
+formatForecastDialogValue(entry.forecastX,format,decimals),
 xyForecastGetSecondaryRowLabel(sec,result,entry.secondary.length),
-xyForecastFormatNumberWithDecimals(sec.forecastY,decimals)
+formatForecastDialogValue(sec.forecastY,format,decimals)
 ]);
 }
 }
@@ -11672,11 +11966,13 @@ navigator.clipboard.writeText(text).then(okMsg).catch(function(){xyFallbackCopy(
 
 function refreshForecastDialogBoxContent(box){
 if(!box||!box.body||!isForecastDialogBox(box))return;
+var format=getForecastDialogFormat(box);
 var decimals=getForecastDialogDecimals(box);
+box.forecastDialogFormat=format;
 box.forecastDialogDecimals=decimals;
-box.text=xyBuildForecastDialogText(box.forecastDialogData,decimals);
+box.text=xyBuildForecastDialogText(box.forecastDialogData,format,decimals);
 box.body.className='dialog-body dialog-body-rich';
-box.richHtml=xyBuildForecastDialogHtml(box.forecastDialogData,decimals);
+box.richHtml=xyBuildForecastDialogHtml(box.forecastDialogData,format,decimals);
 box.body.innerHTML=box.richHtml;
 refreshDialogCopyButton(box);
 syncDialogTextSnapshot(box);
@@ -11689,10 +11985,11 @@ if(!box||!box.body||!result)return;
 box.readOnly=true;
 box.allowRichEdit=false;
 box.forecastDialogData=cfgClone(result);
+box.forecastDialogFormat=getForecastDialogFormat(box);
 box.forecastDialogDecimals=getForecastDialogDecimals(box);
-box.text=xyBuildForecastDialogText(result,box.forecastDialogDecimals);
+box.text=xyBuildForecastDialogText(result,box.forecastDialogFormat,box.forecastDialogDecimals);
 box.body.className='dialog-body dialog-body-rich';
-box.richHtml=xyBuildForecastDialogHtml(result,box.forecastDialogDecimals);
+box.richHtml=xyBuildForecastDialogHtml(result,box.forecastDialogFormat,box.forecastDialogDecimals);
 box.body.innerHTML=box.richHtml;
 refreshDialogCopyButton(box);
 refreshDialogEditButton(box);
@@ -12679,6 +12976,9 @@ on:!!src.on,
 axis:(src.axis==='y'||src.axis==='z')?src.axis:'x',
 angle:Math.max(0,Math.min(360,parseInt(src.angle,10)||0)),
 dir:(src.dir==='-')?'-':'+',
+angle2On:!!src.angle2On,
+angle2:Math.max(0,Math.min(360,parseInt(src.angle2,10)||0)),
+dir2:(src.dir2==='-')?'-':'+',
 refA:clampCutPercent(src.refA),
 refB:clampCutPercent(src.refB),
 hidePlane:!!src.hidePlane
@@ -12690,6 +12990,9 @@ var onEl=document.getElementById('rot-cut-on');
 var axisEl=document.getElementById('rot-cut-axis');
 var angleEl=document.getElementById('rot-cut-angle');
 var dirEl=document.getElementById('rot-cut-dir');
+var angle2Btn=document.getElementById('rot-cut-angle2-toggle');
+var angle2El=document.getElementById('rot-cut-angle2');
+var dir2El=document.getElementById('rot-cut-dir2');
 var refAEl=document.getElementById('rot-cut-ref-a');
 var refBEl=document.getElementById('rot-cut-ref-b');
 var hidePlaneEl=document.getElementById('rot-cut-hide-plane');
@@ -12698,10 +13001,22 @@ on:onEl?onEl.checked:state.on,
 axis:axisEl?axisEl.value:state.axis,
 angle:angleEl?angleEl.value:state.angle,
 dir:dirEl?dirEl.value:state.dir,
+angle2On:angle2Btn?(angle2Btn.getAttribute('data-on')==='1'):state.angle2On,
+angle2:angle2El?angle2El.value:state.angle2,
+dir2:dir2El?dir2El.value:state.dir2,
 refA:refAEl?refAEl.value:state.refA,
 refB:refBEl?refBEl.value:state.refB,
 hidePlane:hidePlaneEl?hidePlaneEl.checked:state.hidePlane
 });
+}
+function updateRotationCutAngle2Button(enabled){
+var btn=document.getElementById('rot-cut-angle2-toggle');
+if(!btn)return;
+btn.setAttribute('data-on',enabled?'1':'0');
+btn.textContent=enabled?'On':'Off';
+btn.style.background=enabled?'#43A047':'#F44336';
+btn.style.borderColor=enabled?'#1B5E20':'#B71C1C';
+btn.style.color='#fff';
 }
 function updateRotationCutUi(state){
 state=sanitizeRotationCutState(state||cutPlanes.rotation||{});
@@ -12712,6 +13027,10 @@ var axisEl=document.getElementById('rot-cut-axis');
 var angleEl=document.getElementById('rot-cut-angle');
 var angleVal=document.getElementById('rot-cut-angle-val');
 var dirEl=document.getElementById('rot-cut-dir');
+var angle2Row=document.getElementById('rot-cut-angle2-row');
+var angle2El=document.getElementById('rot-cut-angle2');
+var angle2Val=document.getElementById('rot-cut-angle2-val');
+var dir2El=document.getElementById('rot-cut-dir2');
 var refAEl=document.getElementById('rot-cut-ref-a');
 var refBEl=document.getElementById('rot-cut-ref-b');
 var refALbl=document.getElementById('rot-cut-ref-a-lbl');
@@ -12729,6 +13048,11 @@ if(axisEl)axisEl.value=info.axis;
 if(angleEl)angleEl.value=String(state.angle);
 if(angleVal)angleVal.innerHTML=String(state.angle)+'&deg;';
 if(dirEl)dirEl.value=state.dir;
+updateRotationCutAngle2Button(state.angle2On);
+if(angle2Row)angle2Row.style.display=state.angle2On?'flex':'none';
+if(angle2El)angle2El.value=String(state.angle2);
+if(angle2Val)angle2Val.innerHTML=String(state.angle2)+'&deg;';
+if(dir2El)dir2El.value=state.dir2;
 if(refAEl)refAEl.value=String(state.refA);
 if(refBEl)refBEl.value=String(state.refB);
 if(refALbl)refALbl.textContent=info.refLabels[0];
@@ -12737,6 +13061,20 @@ if(refAVal)refAVal.textContent=String(state.refA)+'%';
 if(refBVal)refBVal.textContent=String(state.refB)+'%';
 if(planeHint)planeHint.innerHTML='0&deg; =&gt; '+info.planeLabel+' plane';
 if(hidePlaneEl)hidePlaneEl.checked=!!state.hidePlane;
+}
+function toggleRotationCutAngle2(force){
+var state=readRotationCutStateFromUi();
+var next=(force===undefined)?(!state.angle2On):!!force;
+if(next&&!state.angle2On){
+state.angle2=state.angle;
+state.dir2=state.dir;
+}
+state.angle2On=next;
+cutPlanes.rotation=sanitizeRotationCutState(state);
+updateRotationCutUi(cutPlanes.rotation);
+applyCutClipping();
+updateValueWindowsForCut();
+scheduleCutMeshRebuild();
 }
 function buildAxisAlignedCut(axis){
 var cfg=cutPlanes[axis];
@@ -12858,14 +13196,29 @@ axisCutPlaneEdges[axis].scale.set(data.width,data.height,1);
 setAxisCutVisualVisibility(axis,true);
 });
 }
+function buildRotationCutPlaneData(axisDir,baseNormal,refPoint,angleDeg,dirValue){
+var planeNormal=baseNormal.clone().normalize();
+var signedAngle=((dirValue==='-')?-1:1)*((parseFloat(angleDeg)||0)*Math.PI/180.0);
+planeNormal.applyAxisAngle(axisDir,signedAngle).normalize();
+var clipNormal=planeNormal.clone().negate();
+var constant=planeNormal.dot(refPoint);
+var planeDir=planeNormal.clone().cross(axisDir).normalize();
+if(planeDir.lengthSq()<1e-16){
+planeDir=new THREE.Vector3(0,1,0).cross(axisDir).normalize();
+if(planeDir.lengthSq()<1e-16)planeDir=new THREE.Vector3(0,0,1).cross(axisDir).normalize();
+}
+return{
+planeNormal:planeNormal,
+clipNormal:clipNormal,
+constant:constant,
+planeDir:planeDir
+};
+}
 function getRotationCutData(){
 var state=sanitizeRotationCutState(cutPlanes.rotation||{});
 if(!state.on)return null;
 var info=getRotationCutAxisInfo(state.axis);
 var axisDir=info.dir.clone().normalize();
-var planeNormal=info.baseNormal.clone().normalize();
-var signedAngle=((state.dir==='-')?-1:1)*(state.angle*Math.PI/180.0);
-planeNormal.applyAxisAngle(axisDir,signedAngle).normalize();
 var refPoint=new THREE.Vector3(
 getAxisRangeInfo('x').mid,
 getAxisRangeInfo('y').mid,
@@ -12875,13 +13228,10 @@ var refAInfo=getAxisRangeInfo(info.refAxes[0]);
 var refBInfo=getAxisRangeInfo(info.refAxes[1]);
 refPoint[info.refAxes[0]]=refAInfo.min+(state.refA/100)*refAInfo.range;
 refPoint[info.refAxes[1]]=refBInfo.min+(state.refB/100)*refBInfo.range;
-var clipNormal=planeNormal.clone().negate();
-var constant=planeNormal.dot(refPoint);
-var planeDir=planeNormal.clone().cross(axisDir).normalize();
-if(planeDir.lengthSq()<1e-16){
-planeDir=new THREE.Vector3(0,1,0).cross(axisDir).normalize();
-if(planeDir.lengthSq()<1e-16)planeDir=new THREE.Vector3(0,0,1).cross(axisDir).normalize();
-}
+var primary=buildRotationCutPlaneData(axisDir,info.baseNormal,refPoint,state.angle,state.dir);
+var secondary=state.angle2On?buildRotationCutPlaneData(axisDir,info.baseNormal,refPoint,state.angle2,state.dir2):null;
+var splitDir=info.baseNormal.clone().cross(axisDir).normalize();
+if(splitDir.lengthSq()<1e-16)splitDir=primary.planeDir.clone();
 var axisInfo=getAxisRangeInfo(info.axis);
 var diag=getMeshDiagonalSize();
 var linePad=Math.max(diag*0.08,axisInfo.range*0.05);
@@ -12896,10 +13246,13 @@ enabled:true,
 state:state,
 info:info,
 axisDir:axisDir,
-planeNormal:planeNormal,
-clipNormal:clipNormal,
-constant:constant,
-planeDir:planeDir,
+planeNormal:primary.planeNormal,
+clipNormal:primary.clipNormal,
+constant:primary.constant,
+planeDir:primary.planeDir,
+primary:primary,
+secondary:secondary,
+splitDir:splitDir,
 refPoint:refPoint,
 lineStart:lineStart,
 lineEnd:lineEnd,
@@ -12912,8 +13265,8 @@ if(!sc)return;
 if(!rotationCutLine){
 var lineGeo=new THREE.BufferGeometry();
 lineGeo.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0,0,0],3));
-rotationCutLine=new THREE.LineSegments(lineGeo,new THREE.LineBasicMaterial({color:0xFF7043,transparent:true,opacity:0.95,depthTest:false}));
-rotationCutLine.renderOrder=997;
+rotationCutLine=new THREE.LineSegments(lineGeo,new THREE.LineBasicMaterial({color:0xFF6D00,transparent:true,opacity:1,depthTest:false,depthWrite:false}));
+rotationCutLine.renderOrder=999;
 rotationCutLine.frustumCulled=false;
 sc.add(rotationCutLine);
 }
@@ -12927,18 +13280,29 @@ rotationCutPlaneEdges=new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),n
 rotationCutPlaneEdges.renderOrder=997;
 rotationCutPlaneEdges.frustumCulled=false;
 sc.add(rotationCutPlaneEdges);
+rotationCutPlaneMesh2=new THREE.Mesh(planeGeo,new THREE.MeshBasicMaterial({color:0x43A047,transparent:true,opacity:0.14,side:THREE.DoubleSide,depthWrite:false}));
+rotationCutPlaneMesh2.renderOrder=996;
+rotationCutPlaneMesh2.frustumCulled=false;
+sc.add(rotationCutPlaneMesh2);
+rotationCutPlaneEdges2=new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),new THREE.LineBasicMaterial({color:0x1B5E20,transparent:true,opacity:0.85,depthTest:false}));
+rotationCutPlaneEdges2.renderOrder=997;
+rotationCutPlaneEdges2.frustumCulled=false;
+sc.add(rotationCutPlaneEdges2);
 }
 }
-function setRotationCutVisualVisibility(show){
-if(rotationCutLine)rotationCutLine.visible=show;
-if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=show;
-if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=show;
+function setRotationCutVisualVisibility(showPrimary,showSecondary){
+var showLine=!!(showPrimary||showSecondary);
+if(rotationCutLine)rotationCutLine.visible=showLine;
+if(rotationCutPlaneMesh)rotationCutPlaneMesh.visible=!!showPrimary;
+if(rotationCutPlaneEdges)rotationCutPlaneEdges.visible=!!showPrimary;
+if(rotationCutPlaneMesh2)rotationCutPlaneMesh2.visible=!!showSecondary;
+if(rotationCutPlaneEdges2)rotationCutPlaneEdges2.visible=!!showSecondary;
 }
 function updateRotationCutVisuals(rotData){
 if(!sc)return;
 ensureRotationCutVisuals();
 if(!rotData||!rotData.enabled){
-setRotationCutVisualVisibility(false);
+setRotationCutVisualVisibility(false,false);
 return;
 }
 var lp=rotationCutLine.geometry.getAttribute('position');
@@ -12946,20 +13310,49 @@ lp.array[0]=rotData.lineStart.x;lp.array[1]=rotData.lineStart.y;lp.array[2]=rotD
 lp.array[3]=rotData.lineEnd.x;lp.array[4]=rotData.lineEnd.y;lp.array[5]=rotData.lineEnd.z;
 lp.needsUpdate=true;
 rotationCutLine.geometry.computeBoundingSphere();
-var basis=new THREE.Matrix4();
-basis.makeBasis(rotData.axisDir,rotData.planeDir,rotData.planeNormal);
-var quat=new THREE.Quaternion().setFromRotationMatrix(basis);
+if(rotationCutLine.material){
+rotationCutLine.material.color.setHex(0xFF6D00);
+rotationCutLine.material.opacity=1;
+rotationCutLine.material.depthTest=false;
+rotationCutLine.material.depthWrite=false;
+rotationCutLine.material.transparent=true;
+rotationCutLine.material.needsUpdate=true;
+}
+var show=!rotData.state.hidePlane;
+var basis1=new THREE.Matrix4();
+basis1.makeBasis(rotData.axisDir,rotData.primary.planeDir,rotData.primary.planeNormal);
+var quat1=new THREE.Quaternion().setFromRotationMatrix(basis1);
+rotationCutPlaneMesh.quaternion.copy(quat1);
+rotationCutPlaneEdges.quaternion.copy(quat1);
+if(rotData.state.angle2On&&rotData.secondary){
+var basis2=new THREE.Matrix4();
+basis2.makeBasis(rotData.axisDir,rotData.secondary.planeDir,rotData.secondary.planeNormal);
+var quat2=new THREE.Quaternion().setFromRotationMatrix(basis2);
+var halfSize=rotData.planeSize*0.5;
+rotationCutPlaneMesh.position.copy(rotData.refPoint).add(rotData.primary.planeDir.clone().multiplyScalar(rotData.planeSize*0.25));
+rotationCutPlaneMesh.scale.set(rotData.lineLength,halfSize,1);
+rotationCutPlaneEdges.position.copy(rotationCutPlaneMesh.position);
+rotationCutPlaneEdges.scale.set(rotData.lineLength,halfSize,1);
+rotationCutPlaneMesh2.position.copy(rotData.refPoint).add(rotData.secondary.planeDir.clone().multiplyScalar(-rotData.planeSize*0.25));
+rotationCutPlaneMesh2.quaternion.copy(quat2);
+rotationCutPlaneMesh2.scale.set(rotData.lineLength,halfSize,1);
+rotationCutPlaneEdges2.position.copy(rotationCutPlaneMesh2.position);
+rotationCutPlaneEdges2.quaternion.copy(quat2);
+rotationCutPlaneEdges2.scale.set(rotData.lineLength,halfSize,1);
+setRotationCutVisualVisibility(show,show);
+return;
+}
 rotationCutPlaneMesh.position.copy(rotData.refPoint);
-rotationCutPlaneMesh.quaternion.copy(quat);
 rotationCutPlaneMesh.scale.set(rotData.lineLength,rotData.planeSize,1);
 rotationCutPlaneEdges.position.copy(rotData.refPoint);
-rotationCutPlaneEdges.quaternion.copy(quat);
 rotationCutPlaneEdges.scale.set(rotData.lineLength,rotData.planeSize,1);
-setRotationCutVisualVisibility(!rotData.state.hidePlane);
+setRotationCutVisualVisibility(show,false);
 }
 function scheduleCutMeshRebuild(){
 if(cutRebuildTimer)clearTimeout(cutRebuildTimer);
-cutRebuildTimer=setTimeout(function(){cutRebuildTimer=null;rebuildCutMesh();},250);
+var rotState=sanitizeRotationCutState(cutPlanes.rotation||{});
+var delay=(rotState.on&&rotState.angle2On)?90:250;
+cutRebuildTimer=setTimeout(function(){cutRebuildTimer=null;rebuildCutMesh();},delay);
 }
 function updateCutPlane(axis){
 var idx=axis==='x'?0:(axis==='y'?1:2);
@@ -13001,8 +13394,12 @@ updateRotationCut();
 function resetRotationCutAngle(){
 var angleEl=document.getElementById('rot-cut-angle');
 var dirEl=document.getElementById('rot-cut-dir');
+var angle2El=document.getElementById('rot-cut-angle2');
+var dir2El=document.getElementById('rot-cut-dir2');
 if(angleEl)angleEl.value='0';
 if(dirEl)dirEl.value='+';
+if(angle2El)angle2El.value='0';
+if(dir2El)dir2El.value='+';
 updateRotationCut();
 }
 function computeClipPlane(axis){
@@ -13020,8 +13417,10 @@ updateAxisCutVisuals();
 var rotData=getRotationCutData();
 updateRotationCutVisuals(rotData);
 if(rotData&&rotData.enabled){
+if(!(rotData.state&&rotData.state.angle2On)){
 rotationClipPlaneThree=new THREE.Plane(rotData.clipNormal.clone(),rotData.constant);
 activeClipPlanesArr.push(rotationClipPlaneThree);
+}
 }
 var cArr=activeClipPlanesArr.length>0?activeClipPlanesArr:[];
 if(ms&&ms.material)ms.material.clippingPlanes=cArr;
@@ -13068,12 +13467,16 @@ document.getElementById('cut-'+axis+'-row').style.display='none';
 cutPlanes[axis]={on:false,pos:50,dir:'+'};
 });
 clipEnabled=[false,false,false];
-cutPlanes.rotation={on:false,axis:'x',angle:0,dir:'+',refA:50,refB:50,hidePlane:false};
+cutPlanes.rotation={on:false,axis:'x',angle:0,dir:'+',angle2On:false,angle2:0,dir2:'+',refA:50,refB:50,hidePlane:false};
 var hideAxisEl=document.getElementById('cut-hide-planes');
 if(hideAxisEl)hideAxisEl.checked=false;
 updateRotationCutUi(cutPlanes.rotation);
 var rotHideEl=document.getElementById('rot-cut-hide-plane');
 if(rotHideEl)rotHideEl.checked=false;
+var rotAngle2El=document.getElementById('rot-cut-angle2');
+var rotDir2El=document.getElementById('rot-cut-dir2');
+if(rotAngle2El)rotAngle2El.value='0';
+if(rotDir2El)rotDir2El.value='+';
 updateAxisCutVisuals();
 updateRotationCutVisuals(null);
 activeClipPlanesArr=[];
@@ -13162,10 +13565,10 @@ var dx=p2[0]-p1[0],dy=p2[1]-p1[1],dz=p2[2]-p1[2];
 var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
 overlay.innerHTML='<b style="color:#ffeb3b">Distance Measurement</b>\\n'+
 'Node A: '+n1+'  Node B: '+n2+'\\n'+
-'\\u0394X = '+dx.toExponential(4)+'\\n'+
-'\\u0394Y = '+dy.toExponential(4)+'\\n'+
-'\\u0394Z = '+dz.toExponential(4)+'\\n'+
-'<b style="color:#4CAF50">Magnitude = '+mag.toExponential(4)+'</b>';
+'\\u0394X = '+formatLegendDrivenValue(dx,'N/A')+'\\n'+
+'\\u0394Y = '+formatLegendDrivenValue(dy,'N/A')+'\\n'+
+'\\u0394Z = '+formatLegendDrivenValue(dz,'N/A')+'\\n'+
+'<b style="color:#4CAF50">Magnitude = '+formatLegendDrivenValue(mag,'N/A')+'</b>';
 overlay.style.display='block';
 }else if(measMode==='angle'){
 var n1=measNodes[0],n2=measNodes[1],n3=measNodes[2];
@@ -13181,8 +13584,8 @@ var angleRad=Math.acos(cosA);
 var angleDeg=angleRad*180/Math.PI;
 overlay.innerHTML='<b style="color:#ffeb3b">Angle Measurement</b>\\n'+
 'Node A: '+n1+'  Node B (vertex): '+n2+'  Node C: '+n3+'\\n'+
-'<b style="color:#4CAF50">Angle at B = '+angleDeg.toFixed(2)+'\\u00B0</b>\\n'+
-'('+angleRad.toFixed(4)+' rad)';
+'<b style="color:#4CAF50">Angle at B = '+formatLegendDrivenValue(angleDeg,'N/A')+'\\u00B0</b>\\n'+
+'('+formatLegendDrivenValue(angleRad,'N/A')+' rad)';
 overlay.style.display='block';
 }
 }
@@ -13270,19 +13673,24 @@ cfg.legendCustomValues=cfgClone(legendCustomValues);
 cfg.legendCustomColors=cfgClone(legendCustomColors);
 cfg.scale=cs;
 cfg.currentVar=currentVar;
+cfg.displacementComponent=normalizeDisplacementComponent(displacementComponent);
 cfg.currentState=cst;
 cfg.cutX={on:document.getElementById('cut-x-on').checked,pos:document.getElementById('cut-x-pos').value,dir:document.getElementById('cut-x-dir').value};
 cfg.cutY={on:document.getElementById('cut-y-on').checked,pos:document.getElementById('cut-y-pos').value,dir:document.getElementById('cut-y-dir').value};
 cfg.cutZ={on:document.getElementById('cut-z-on').checked,pos:document.getElementById('cut-z-pos').value,dir:document.getElementById('cut-z-dir').value};
 cfg.cutHidePlanes=!!(document.getElementById('cut-hide-planes')&&document.getElementById('cut-hide-planes').checked);
+var rcState=sanitizeRotationCutState(cutPlanes.rotation||readRotationCutStateFromUi());
 cfg.rotationCut={
-on:document.getElementById('rot-cut-on').checked,
-axis:document.getElementById('rot-cut-axis').value,
-angle:document.getElementById('rot-cut-angle').value,
-dir:document.getElementById('rot-cut-dir').value,
-refA:document.getElementById('rot-cut-ref-a').value,
-refB:document.getElementById('rot-cut-ref-b').value,
-hidePlane:!!(document.getElementById('rot-cut-hide-plane')&&document.getElementById('rot-cut-hide-plane').checked)
+on:rcState.on,
+axis:rcState.axis,
+angle:rcState.angle,
+dir:rcState.dir,
+angle2On:rcState.angle2On,
+angle2:rcState.angle2,
+dir2:rcState.dir2,
+refA:rcState.refA,
+refB:rcState.refB,
+hidePlane:rcState.hidePlane
 };
 cfg.measMode=document.getElementById('meas-mode').value;
 cfg.xyCurves=cfgClone(xyCurves);
@@ -13339,6 +13747,7 @@ readOnly:!!b.readOnly,
 allowRichEdit:(b.allowRichEdit!==false),
 fontSizePx:getDialogFontSizePx(b),
 forecastDialogData:isForecastDialogBox(b)?cfgClone(b.forecastDialogData):null,
+forecastDialogFormat:isForecastDialogBox(b)?getForecastDialogFormat(b):null,
 forecastDialogDecimals:isForecastDialogBox(b)?getForecastDialogDecimals(b):null,
 nodeIdx:(b.nodeIdx!==undefined?b.nodeIdx:-1)
 };
@@ -13378,6 +13787,9 @@ return html+'\\n'+tag;
 function loadRuntimeConfig(cfg){
 if(!cfg)return;
 var hasVar=false;
+if(cfg.displacementComponent!==undefined&&cfg.displacementComponent!==null){
+displacementComponent=normalizeDisplacementComponent(cfg.displacementComponent);
+}
 if(cfg.currentVar!==undefined&&cfg.currentVar!==null&&String(cfg.currentVar)!==''){
 var vName=String(cfg.currentVar);
 if(hasVarStateData(vName)){
@@ -13387,6 +13799,8 @@ hasVar=true;
 }else{
 console.warn('Runtime config: currentVar not found:',vName);
 }
+}else{
+refreshDisplacementComponentUi();
 }
 if(cfg.currentState!==undefined&&cfg.currentState!==null&&String(cfg.currentState)!==''){
 setTimeout(function(){
@@ -13635,6 +14049,7 @@ b.nodeIdx=-1;
 }
 if(src.forecastDialogData&&typeof src.forecastDialogData==='object'){
 b.forecastDialogData=cfgClone(src.forecastDialogData);
+if(src.forecastDialogFormat!==undefined&&src.forecastDialogFormat!==null)b.forecastDialogFormat=(String(src.forecastDialogFormat)==='exp')?'exp':'float';
 if(src.forecastDialogDecimals!==undefined&&src.forecastDialogDecimals!==null)b.forecastDialogDecimals=Math.max(0,Math.min(10,cfgNumOr(src.forecastDialogDecimals,6)));
 refreshForecastDialogBoxContent(b);
 }
@@ -13739,6 +14154,9 @@ document.getElementById('rot-cut-on').checked=cfg.rotationCut.on;
 document.getElementById('rot-cut-axis').value=cfg.rotationCut.axis||'x';
 document.getElementById('rot-cut-angle').value=(cfg.rotationCut.angle!==undefined&&cfg.rotationCut.angle!==null)?cfg.rotationCut.angle:'0';
 document.getElementById('rot-cut-dir').value=(cfg.rotationCut.dir==='-')?'-':'+';
+if(document.getElementById('rot-cut-angle2'))document.getElementById('rot-cut-angle2').value=(cfg.rotationCut.angle2!==undefined&&cfg.rotationCut.angle2!==null)?cfg.rotationCut.angle2:document.getElementById('rot-cut-angle').value;
+if(document.getElementById('rot-cut-dir2'))document.getElementById('rot-cut-dir2').value=(cfg.rotationCut.dir2==='-')?'-':'+';
+if(document.getElementById('rot-cut-angle2-toggle'))document.getElementById('rot-cut-angle2-toggle').setAttribute('data-on',cfg.rotationCut.angle2On?'1':'0');
 document.getElementById('rot-cut-ref-a').value=(cfg.rotationCut.refA!==undefined&&cfg.rotationCut.refA!==null)?cfg.rotationCut.refA:'50';
 document.getElementById('rot-cut-ref-b').value=(cfg.rotationCut.refB!==undefined&&cfg.rotationCut.refB!==null)?cfg.rotationCut.refB:'50';
 document.getElementById('rot-cut-hide-plane').checked=!!cfg.rotationCut.hidePlane;
@@ -13849,6 +14267,7 @@ setHideAllConnected(cfgHideAll);
 document.getElementById('hide-elem-on').checked=cfgHideMode;
 tgHideElements(cfgHideMode);
 refreshAfterHideElementsChange();
+refreshDisplacementComponentUi();
 drawPlot();
 updateDialogBoxesVisuals();
 document.getElementById('st').textContent='Configuration loaded successfully!';
