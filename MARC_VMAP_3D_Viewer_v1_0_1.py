@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-VMAP 3D VIEWER v1.0.19 - Vibracoustic EU FEA Department
+VMAP 3D VIEWER v1.0.20 - Vibracoustic EU FEA Department
 NEW: GUI with LabelFrame steps, progress title, watermark, Guideline button
 NEW: Full 360-degree rotation and translation
 NEW: GIF export with start/end increment range
@@ -31,6 +31,7 @@ CHANGE: Sidebar control sections can now be reordered as blue cards by dragging 
 CHANGE: Animation card is now draggable with the same grab header used by the other sidebar cards
 CHANGE: File Information is now a fixed blue card with bold labels and stays pinned at the top of the sidebar
 CHANGE: Visualization Standards now include CC1/CC2_B TETRA and HEXA variants with the requested extrapolation mappings
+CHANGE: Legend Levels selector reduced to match the Dec selector width and stay on the same line as its label
 Author: Leandro Barbosa
 """
 
@@ -1902,7 +1903,7 @@ Scroll Wheel: Zoom
 <div class="lg">
 ''' + ('<img src="' + logo_data_uri + '" alt="Vibracoustic">' if logo_data_uri else '<h1>Vibracoustic</h1>') + '''
 <h2>VMAP 3D Viewer</h2>
-<span>European FEA Department - v1.0.19</span>
+<span>European FEA Department - v1.0.20</span>
 </div>
 <div class="p sidebar-card file-info-card"><div class="pt"><span>File Information</span></div>
 <div class="ir ir-file-name"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
@@ -2062,7 +2063,7 @@ Scroll Wheel: Zoom
 <div id="legend-extrap-summary" class="legend-extrap-summary">''' + ('Linear | Nodal Avg Off | Element-local contour' if var_locations.get(default_var, 'node') == 'element' else 'Linear | Nodal Avg Off | Native nodal contour') + '''</div>
 <div id="leg-data-info" style="font-size:10px;color:#888;margin-top:3px">Data range: ''' + cr_min + ''' ~ ''' + cr_max + '''</div>
 <div style="display:flex;align-items:center;gap:4px;margin-top:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:bold">Font:</span><input type="range" id="leg-font-size" min="7" max="20" step="1" value="14" oninput="setLegFontSize(this.value)" style="width:82px"><span id="leg-font-size-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:18px;text-align:right">14</span>
-<span style="font-size:10px;font-weight:bold;margin-left:6px">Levels:</span><select id="leg-levels" onchange="setLegLevels(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12" selected>12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option></select></div>
+<span style="font-size:10px;font-weight:bold;margin-left:6px">Levels:</span><select id="leg-levels" onchange="setLegLevels(this.value)" style="width:56px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12" selected>12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option></select></div>
 <div style="display:flex;align-items:center;gap:4px;margin-top:4px"><span style="font-size:10px;font-weight:bold">Format:</span><select id="leg-format" onchange="setLegFormat(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="exp">Exponential</option><option value="float" selected>Floating</option></select><span id="leg-fdec-wrap" style="display:inline-flex;align-items:center;gap:3px;margin-left:2px"><span style="font-size:10px;font-weight:bold">Dec:</span><select id="leg-fdec" onchange="setLegFloatDecimals(this.value)" style="width:56px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option></select></span></div>
 <div style="display:flex;justify-content:flex-end;margin-top:3px"><button class="leg-btn" onclick="legendDefault()">Default</button></div>
 <div style="margin-top:6px;border-top:1px solid #e0e0e0;padding-top:4px">
@@ -15259,7 +15260,7 @@ class App:
         # Title labels - centered
         tk.Label(tf, text="Vibracoustic", font=('Arial', 18, 'bold'), fg='white', bg='#d4542a', pady=3).pack()
         tk.Label(tf, text="VMAP 3D Viewer", font=('Arial', 12), fg='white', bg='#d4542a', pady=1).pack()
-        tk.Label(tf, text="European FEA Department - v1.0.19", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
+        tk.Label(tf, text="European FEA Department - v1.0.20", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
         
         # Guideline button - floating in top-right corner of title frame
         guideline_btn = tk.Button(tf, text="Guideline", command=self.open_guideline,
