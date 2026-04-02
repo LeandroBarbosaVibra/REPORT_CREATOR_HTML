@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-VMAP 3D VIEWER v1.0.1- Vibracoustic EU FEA Department  
+VMAP 3D VIEWER v1.0.18 - Vibracoustic EU FEA Department
 NEW: GUI with LabelFrame steps, progress title, watermark, Guideline button
 NEW: Full 360-degree rotation and translation
 NEW: GIF export with start/end increment range
@@ -18,6 +18,18 @@ NEW: Zoom Box tool for 3D viewport, Table Form for multi-value inspection
 NEW: Save and Load section, Mode label for XY Plot toggle
 FIX: Real element/node IDs from VMAP file now shown in viewer (was showing array indices)
 FIX: Value lookup accepts real IDs
+NEW: Legend Extrapolation dialog with Mentat-style method and nodal averaging options
+NEW: Extrapolation visualization standards loaded from CMO_031_C_3D_VIEWER.docx
+CHANGE: Extrapolation Information refined for CC and PL standards; Mentat explanatory note removed from dialog
+CHANGE: Extrapolation button renamed to Visualization Options and highlighted in Legend
+CHANGE: Visualization Options list refreshed from updated CMO_031_C_3D_VIEWER.docx and button restyled in standard blue
+CHANGE: Table Form Links can now be enabled without requiring Values to be active
+CHANGE: Forecast-created dialog boxes no longer show the title "Forecast Result"
+CHANGE: Measure supports multiple draggable Distance/Angle info windows with sequential node letters
+CHANGE: File Information now shows the current user name
+CHANGE: Sidebar control sections can now be reordered as blue cards by dragging their headers
+CHANGE: Animation card is now draggable with the same grab header used by the other sidebar cards
+CHANGE: File Information is now a fixed blue card with bold labels and stays pinned at the top of the sidebar
 Author: Leandro Barbosa
 """
 
@@ -43,7 +55,30 @@ GUIDELINE_PATH = r"\\frafil002\VC_FEA\VC-Marc_Post\Marc_Tools_Guideline\Marc_VMA
 LOGO_SVG_PATH = r"\\frafil002\VC_FEA\VC-Marc_Post\Marc_Python\Canvas\Vibracoustic.svg"
 VIBRA_SVG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VIBRA.svg")
 JSON_SCRIPT_CHUNK_SIZE = 200000
-CACHE_SCHEMA_VERSION = "vmap_3d_viewer_cache_2026_03_25_dispvec1"
+CACHE_SCHEMA_VERSION = "vmap_3d_viewer_cache_2026_04_01_zoomvalues1"
+EXTRAPOLATION_STANDARD_PRESETS = [
+    {"name": "VISU1", "info": "Stress of Mises averaged to the nodes", "method": "linear", "avg": "on"},
+    {"name": "VISU2", "info": "Stress of Mises averaged to the element faces", "method": "translate", "avg": "off"},
+    {"name": "VISU3", "info": "Maximal Principal Stress averaged to the nodes", "method": "linear", "avg": "on"},
+    {"name": "VISU4", "info": "Equivalent Plastic Strains averaged to the element faces", "method": "translate", "avg": "off"},
+    {"name": "VISU5", "info": "Equivalent Plastic Strains averaged to the nodes", "method": "linear", "avg": "on"},
+    {"name": "VISU6a", "info": "Maximal Principal Stress averaged to the nodes", "method": "linear", "avg": "on"},
+    {"name": "VISU6b", "info": "Minimal Principal Stress averaged to the nodes at the opposite load to VISU6a", "method": "linear", "avg": "on"},
+    {"name": "VISU7", "info": "Nominal Strains averaged to the nodes", "method": "average", "avg": "on"},
+    {"name": "VISU8", "info": "Minimal Principal Strains averaged to the nodes", "method": None, "avg": None},
+    {"name": "VISU9", "info": "Maximal Principal Stress averaged to the element faces", "method": "translate", "avg": "off"},
+    {"name": "VISU10", "info": "Minimal Principal Stress averaged to the nodes", "method": "linear", "avg": "on"},
+    {"name": "VISU11", "info": "Nominal Strains averaged to the element faces", "method": "average", "avg": "on"},
+    {"name": "VISU12a", "info": "Maximal Principal Stress averaged to the element faces", "method": "translate", "avg": "off"},
+    {"name": "VISU12b", "info": "Minimal Principal Stress averaged to the element faces at the opposite load to VISU12a", "method": "translate", "avg": "off"},
+    {"name": "VISU13", "info": "Magnitude of displacement to the nodes", "method": None, "avg": None},
+    {"name": "VISU15a", "info": "Stress of Mises averaged to the nodes", "method": "linear", "avg": "on"},
+    {"name": "VISU15b", "info": "Stress of Mises averaged to the nodes at the opposite load to VISU15a", "method": "linear", "avg": "on"},
+    {"name": "VISU_CC1", "info": "Nominal Strains evraged to the element faces. Used for the output: eps1_en.", "method": "average", "avg": "on"},
+    {"name": "VISU_CC2_B", "info": "Vibracoustic Damage B4 Dimensionless and Normalized Value averaged on elements centroid. Used for Damage Analysis (Rubber).", "method": "average", "avg": "on"},
+    {"name": "VISU_PL6", "info": "Stress of Mises averaged to the nodes. Used for Plastic parts.", "method": "linear", "avg": "on"},
+    {"name": "VISU_PL7", "info": "Maximal Principal Stress averaged to the nodes. Used for Plastic parts.", "method": "linear", "avg": "on"},
+]
 
 def make_chunked_json_script(base_id, json_text, chunk_size=JSON_SCRIPT_CHUNK_SIZE):
     if not isinstance(json_text, str):
@@ -945,6 +980,12 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
         materials_info_html = "<br>".join(material_lines)
     else:
         materials_info_html = "n/a"
+    viewer_user_name = (
+        safe_string(os.environ.get("USERNAME") or os.environ.get("USER") or "n/a", "n/a")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
     
     original_nodes = reader.nodes
     if original_nodes is None:
@@ -983,6 +1024,11 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     var_locations = reader.get_variable_locations()
     if 'Displacement' in viewer_outputs and 'Displacement' not in var_locations:
         var_locations['Displacement'] = 'node'
+    if not harmonic_mode:
+        needs_element_contour = any(var_locations.get(v, 'node') == 'element' for v in viewer_outputs)
+        if needs_element_contour and not export_centroid:
+            export_centroid = True
+            update_progress(16, "Element outputs detected: enabling element data export for extrapolation support...")
     state_names = sorted(reader.states.keys(), key=natural_sort_key)
     src_size = 0
     src_mtime = 0.0
@@ -1395,7 +1441,7 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
 
     if harmonic_mode:
         scale_controls_html = (
-            '<div class="p"><div class="pt">Displacement Scale</div>'
+            '<div class="p sidebar-card" data-panel-id="displacement-scale"><div class="pt sidebar-card-handle"><span>Displacement Scale</span><span class="sidebar-card-grip">&#9776;</span></div>'
             '<div class="cg">'
             '<div class="cl">Scale Factor:</div>'
             '<input type="text" id="scf" value="' + harmonic_initial_scale_text + '" '
@@ -1407,7 +1453,7 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
         )
     else:
         scale_controls_html = (
-            '<div class="p"><div class="pt">Displacement Scale</div>'
+            '<div class="p sidebar-card" data-panel-id="displacement-scale"><div class="pt sidebar-card-handle"><span>Displacement Scale</span><span class="sidebar-card-grip">&#9776;</span></div>'
             '<div class="cg">'
             '<div class="cl">Scale Factor: <span class="sv" id="scv">1.0</span></div>'
             '<input type="range" id="scr" min="0" max="10" step="0.1" value="1" oninput="usc(this.value)">'
@@ -1420,7 +1466,7 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     animation_panel_html = ""
     if show_animation_section:
         animation_panel_html = (
-            '<div class="p"><div class="pt">Animation</div>'
+            '<div class="p sidebar-card" data-panel-id="animation"><div class="pt sidebar-card-handle"><span>Animation</span><span class="sidebar-card-grip">&#9776;</span></div>'
             '<div class="anim">'
             '<div class="cl">Speed: '
             '<input type="range" id="anim-speed" value="5" min="1" max="10" step="1" style="width:120px" oninput="document.getElementById(\'speed-val\').textContent=this.value">'
@@ -1481,6 +1527,17 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#efefef;color:#333;overf
 #sb{position:absolute;top:0;left:0;width:320px;height:100%;background:#efefef;border-right:2px solid #ccc;overflow-y:auto;overflow-x:hidden;box-shadow:2px 0 10px rgba(0,0,0,0.1)}
 .p{padding:14px 16px;border-bottom:1px solid #ddd}
 .pt{font-size:12px;font-weight:bold;color:#2196F3;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px}
+#sidebar-panel-zone{padding:4px 0 18px 0}
+.sidebar-card{position:relative;margin:10px 12px;padding:0 14px 14px;background:linear-gradient(180deg,rgba(255,255,255,0.99) 0%,rgba(247,250,255,0.98) 100%);border:2px solid rgba(33,150,243,0.78);border-radius:10px;border-bottom:none;box-shadow:0 3px 10px rgba(33,150,243,0.10),0 2px 6px rgba(0,0,0,0.06);overflow:hidden}
+.sidebar-card .pt{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 -14px 12px -14px;padding:10px 14px;background:linear-gradient(180deg,rgba(33,150,243,0.16) 0%,rgba(255,255,255,0.92) 100%);border-bottom:1px solid rgba(33,150,243,0.26)}
+.sidebar-card-handle{cursor:grab;user-select:none}
+.sidebar-card-handle:active{cursor:grabbing}
+.sidebar-card-grip{flex:0 0 auto;font-size:14px;line-height:1;color:#1976D2;opacity:0.78;letter-spacing:1px}
+.sidebar-card.dragging{opacity:0.58;box-shadow:0 10px 24px rgba(33,150,243,0.24),0 4px 14px rgba(0,0,0,0.14)}
+.sidebar-card-placeholder{margin:10px 12px;border:2px dashed #2196F3;border-radius:10px;background:rgba(33,150,243,0.08);box-shadow:inset 0 0 0 1px rgba(255,255,255,0.35)}
+.sidebar-zone-static{margin:10px 12px;background:rgba(255,255,255,0.9);border:1px solid rgba(33,150,243,0.24);border-radius:10px;border-bottom:none;box-shadow:0 2px 8px rgba(0,0,0,0.04);overflow:hidden}
+.sidebar-zone-static .pt{margin-bottom:10px}
+.file-info-card .il{font-weight:700;color:#444}
 .ir{display:flex;justify-content:space-between;padding:4px 0;font-size:11px}
 .il{color:#666}.iv{color:#333;font-weight:600}
 .ir-file-name{align-items:flex-start;gap:8px}
@@ -1535,6 +1592,8 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .pinned-label .pn-elem{color:#81C784;font-size:0.9em}
 #dialog-link-layer{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:265}
 #dialog-box-container{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:191;overflow:hidden}
+#measure-label-container{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:192;overflow:hidden}
+.measure-node-label{position:absolute;min-width:18px;padding:2px 6px;border-radius:999px;background:#2196F3;color:#fff;font-size:10px;font-weight:800;line-height:1.2;text-align:center;pointer-events:none;border:1px solid rgba(255,255,255,0.35);box-shadow:0 1px 4px rgba(0,0,0,0.28);white-space:nowrap}
 .dialog-box{position:absolute;pointer-events:auto;display:inline-block;max-width:340px;min-width:90px;background:rgba(255,255,255,0.95);color:#222;border:1px solid rgba(0,0,0,0.24);border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.35);font-size:11px;line-height:1.35;transition:border-color .15s,box-shadow .15s}
 .dialog-box.active{border-color:#1976D2;box-shadow:0 0 0 2px rgba(25,118,210,0.22),0 2px 10px rgba(0,0,0,0.35)}
 .dialog-box.editing{border-color:#FDD835;box-shadow:0 0 0 2px rgba(253,216,53,0.28),0 2px 10px rgba(0,0,0,0.35)}
@@ -1637,6 +1696,8 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .leg-input:focus{border-color:#2196F3;outline:none}
 .leg-btn{font-size:10px;padding:2px 8px;border:1px solid #999;border-radius:3px;cursor:pointer;background:#eee;margin:2px}
 .leg-btn:hover{background:#2196F3;color:white}
+.leg-btn-highlight{background:#2196F3;border-color:#1565C0;color:#fff;font-weight:bold;font-size:11px;padding:4px 14px;border-radius:5px;box-shadow:0 0 0 1px rgba(33,150,243,0.18),0 3px 8px rgba(33,150,243,0.35)}
+.leg-btn-highlight:hover{background:#1976D2;color:#fff}
 
 /* Navigation Buttons */
 #nav-buttons{position:absolute;top:15px;left:calc(320px + (100vw - 320px)/2);transform:translateX(-50%);display:flex;gap:6px;z-index:100}
@@ -1733,6 +1794,8 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .xy-modal-check{display:flex;align-items:flex-start;gap:8px;margin:10px 0 4px 0;font-size:10px;color:#444}
 .xy-modal-check input{margin-top:2px;accent-color:#8E24AA}
 .xy-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}
+.legend-extrap-summary{margin-top:6px;padding:6px 8px;border:1px solid #D1C4E9;border-radius:6px;background:#F6F0FB;font-size:9px;line-height:1.4;color:#5E35B1}
+.legend-extrap-info{margin-top:8px;padding:8px 10px;border-radius:8px;background:#EEF6FF;border-left:4px solid #1E88E5;font-size:10px;line-height:1.45;color:#0D47A1}
 #xy-forecast-fields{display:flex;flex-direction:column;gap:8px}
 .xy-forecast-row{display:flex;align-items:flex-end;gap:6px}
 .xy-forecast-row .xy-modal-field{flex:1;margin:0}
@@ -1791,6 +1854,7 @@ Scroll Wheel: Zoom
 <canvas id="dialog-link-layer"></canvas>
 <div id="pinned-container"></div>
 <div id="dialog-box-container"></div>
+<div id="measure-label-container"></div>
 <div id="cfg-toast"></div>
 <div id="meas-overlay"></div>
 <div id="table-form-window" style="display:none">
@@ -1835,16 +1899,18 @@ Scroll Wheel: Zoom
 <div class="lg">
 ''' + ('<img src="' + logo_data_uri + '" alt="Vibracoustic">' if logo_data_uri else '<h1>Vibracoustic</h1>') + '''
 <h2>VMAP 3D Viewer</h2>
-<span>European FEA Department - v1.0.1</span>
+<span>European FEA Department - v1.0.18</span>
 </div>
-<div class="p"><div class="pt">File Information</div>
+<div class="p sidebar-card file-info-card"><div class="pt"><span>File Information</span></div>
 <div class="ir ir-file-name"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
+<div class="ir"><span class="il">User: </span><span class="iv">''' + viewer_user_name + '''</span></div>
 <div class="ir"><span class="il">Nodes: </span><span class="iv">''' + str(reader.n_nodes) + '''</span></div>
 <div class="ir"><span class="il">Elements: </span><span class="iv">''' + str(reader.n_elements) + '''</span></div>
 <div class="ir"><span class="il">States: </span><span class="iv">''' + str(len(reader.states)) + '''</span></div>
 <div class="ir"><span class="il">Materials: </span><span class="iv" style="white-space:normal;word-break:break-word">''' + materials_info_html + '''</span></div>
 </div>
-<div class="p"><div class="pt">Output Available</div>
+<div id="sidebar-panel-zone">
+<div class="p sidebar-card" data-panel-id="output-available"><div class="pt sidebar-card-handle"><span>Output Available</span><span class="sidebar-card-grip">&#9776;</span></div>
 <select id="vs" onchange="ovs()">''' + ''.join(['<option value="{0}"{1}>{0}</option>'.format(
     v, ' selected' if v == default_var else '') for v in viewer_outputs]) + '''</select>
 <div id="disp-component-wrap" class="disp-comp-wrap">
@@ -1856,13 +1922,12 @@ Scroll Wheel: Zoom
 <button type="button" id="disp-comp-z" class="disp-comp-btn disp-comp-z" onclick="setDisplacementComponent('z')">Displacement Z</button>
 </div>
 </div>
-<div class="ck" style="margin-top:4px"><input type="checkbox" id="centroid-mode" onchange="tgCentroid(this.checked)"><label>Element Centroid</label><span style="font-size:8px;color:#999;margin-left:4px" id="centroid-info">''' + ('(linear extrapolation from IPs)' if var_locations.get(default_var, 'node') == 'element' else '(extrapolated nodal values)') + '''</span></div>
 </div>
-<div class="p"><div class="pt">Increment Selection</div>
+<div class="p sidebar-card" data-panel-id="increment-selection"><div class="pt sidebar-card-handle"><span>Increment Selection</span><span class="sidebar-card-grip">&#9776;</span></div>
 <select id="ss" onchange="osc()"><option value="">-- Select Increment --</option></select>
 </div>
 ''' + animation_panel_html + '''
-<div class="p"><div class="pt">Display Options</div>
+<div class="p sidebar-card" data-panel-id="display-options"><div class="pt sidebar-card-handle"><span>Display Options</span><span class="sidebar-card-grip">&#9776;</span></div>
 <div class="disp-opt-sec disp-opt-sec-first">Mesh</div>
 <div class="ck"><label style="font-size:11px;color:#444">Edges:</label><select id="ed" onchange="tgeMode(this.value)" style="margin-left:6px;font-size:10px;padding:2px 4px;border:1px solid #ccc;border-radius:3px"><option value="feature" selected>Feature Edges</option><option value="none">No Edges</option>''' + all_edges_option_html + '''</select></div>
 <div class="ck"><input type="checkbox" id="wf" onchange="tgw(this.checked)"><label>Wireframe Mode</label></div>
@@ -1919,7 +1984,7 @@ Scroll Wheel: Zoom
 <input type="range" id="table-form-font" min="8" max="18" step="1" value="10" oninput="setTableFormFont(this.value)" style="flex:1;max-width:150px">
 <span id="table-form-font-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:14px;text-align:right">10</span>
 </div>
-<div class="ck"><label style="font-size:11px;color:#444">Measure:</label><select id="meas-mode" onchange="setMeasMode(this.value)" style="margin-left:6px;font-size:10px;padding:2px 4px;border:1px solid #ccc;border-radius:3px"><option value="off" selected>Off</option><option value="distance">Distance</option><option value="angle">Angle</option></select><button class="bt bt2" onclick="clearMeas()" style="margin-left:4px;font-size:9px;padding:1px 6px">Clear</button></div>
+<div class="ck"><label style="font-size:11px;color:#444">Measure:</label><select id="meas-mode" onchange="setMeasMode(this.value)" style="margin-left:6px;font-size:10px;padding:2px 4px;border:1px solid #ccc;border-radius:3px"><option value="off" selected>Off</option><option value="distance">Distance</option><option value="angle">Angle</option></select><button class="bt bt3" onclick="armMeasAdd()" style="margin-left:4px;font-size:10px;padding:1px 8px">+</button><button class="bt bt2" onclick="clearMeas()" style="margin-left:4px;font-size:9px;padding:1px 6px">Clear</button></div>
 <div class="disp-opt-sec">Text</div>
 <div class="ck">
 <input type="checkbox" id="dlg-on" onchange="tgDialogMode(this.checked)">
@@ -1931,13 +1996,13 @@ Scroll Wheel: Zoom
 </div>
 <div id="dlg-hint">Activate and click on the mesh area to place a dialog box.</div>
 </div>
-<div class="p"><div class="pt">XY Plot</div>
+<div class="p sidebar-card" data-panel-id="xy-plot"><div class="pt sidebar-card-handle"><span>XY Plot</span><span class="sidebar-card-grip">&#9776;</span></div>
 <div style="display:flex;align-items:center;gap:8px">
 <span style="font-size:11px;font-weight:bold;color:#555">Mode:</span>
 <button class="xy-toggle-btn off" id="xy-toggle-btn" onclick="tgxy(!xyPlotVisible)">Off</button>
 </div>
 </div>
-<div class="p"><div class="pt">View Manager</div>
+<div class="p sidebar-card" data-panel-id="view-manager"><div class="pt sidebar-card-handle"><span>View Manager</span><span class="sidebar-card-grip">&#9776;</span></div>
 <div class="disp-opt-sec disp-opt-sec-first">Cut View</div>
 <div style="font-size:10px;color:#666;margin-bottom:6px">Cut the mesh along X, Y, or Z planes to reveal interior elements.</div>
 <div class="ck"><input type="checkbox" id="cut-x-on" onchange="updateCutPlane('x')"><label>Enable X Cut</label></div>
@@ -1980,7 +2045,7 @@ Scroll Wheel: Zoom
 </div>
 <div id="hide-elem-hint">Hide mode active: click an element or drag a box in the mesh area.</div>
 </div>
-<div class="p"><div class="pt">Legend</div>
+<div class="p sidebar-card" data-panel-id="legend"><div class="pt sidebar-card-handle"><span>Legend</span><span class="sidebar-card-grip">&#9776;</span></div>
 <div class="cl">Variable: <span class="sv" id="cln">''' + (default_var if default_var else 'None') + '''</span></div>
 <div id="cb"></div>
 <div style="margin-top:6px">
@@ -1990,6 +2055,8 @@ Scroll Wheel: Zoom
 <button class="leg-btn" onclick="applyLegRange()">Apply</button>
 <button class="leg-btn" onclick="resetLegRange()">Reset</button>
 </div>
+<div style="display:flex;justify-content:flex-end;margin-top:4px"><button class="leg-btn leg-btn-highlight" onclick="openExtrapolationDialog()">Visualization Options</button></div>
+<div id="legend-extrap-summary" class="legend-extrap-summary">''' + ('Linear | Nodal Avg Off | Element-local contour' if var_locations.get(default_var, 'node') == 'element' else 'Linear | Nodal Avg Off | Native nodal contour') + '''</div>
 <div id="leg-data-info" style="font-size:10px;color:#888;margin-top:3px">Data range: ''' + cr_min + ''' ~ ''' + cr_max + '''</div>
 <div style="display:flex;align-items:center;gap:4px;margin-top:4px;flex-wrap:wrap"><span style="font-size:10px;font-weight:bold">Font:</span><input type="range" id="leg-font-size" min="7" max="20" step="1" value="14" oninput="setLegFontSize(this.value)" style="width:82px"><span id="leg-font-size-val" style="font-size:10px;font-weight:bold;color:#1976D2;min-width:18px;text-align:right">14</span>
 <span style="font-size:10px;font-weight:bold;margin-left:6px">Levels:</span><select id="leg-levels" onchange="setLegLevels(this.value)" style="width:78px;font-size:10px;padding:1px 2px;border:1px solid #999;border-radius:3px"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12" selected>12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option></select></div>
@@ -2008,12 +2075,13 @@ Scroll Wheel: Zoom
 </div>
 </div>
 ''' + scale_controls_html + '''
-<div class="p"><div class="pt">Save and Load</div>
+<div class="p sidebar-card" data-panel-id="save-load"><div class="pt sidebar-card-handle"><span>Save and Load</span><span class="sidebar-card-grip">&#9776;</span></div>
 <button class="bt bt-orange" onclick="scs()">&#128247; Screenshot</button>
 <button class="bt bt-yellow" onclick="saveCurrentHtmlFile()">&#128196; Save File</button>
 <button class="bt bt3" onclick="saveConfig()">&#128190; Save Config</button>
 <button class="bt" onclick="document.getElementById('cfg-file-input').click()" style="font-size:10px">&#128194; Load Config</button>
 <input type="file" id="cfg-file-input" accept=".json" style="display:none" onchange="loadConfigFile(this)">
+</div>
 </div>
 </div>
 <!-- XY Plot Panel -->
@@ -2141,6 +2209,42 @@ Scroll Wheel: Zoom
 </div>
 </div>
 </div>
+<div class="xy-modal-overlay" id="legend-extrapolation-overlay" onclick="if(event.target===this)closeExtrapolationDialog()">
+<div class="xy-modal">
+<div class="xy-modal-title"><span>Legend Extrapolation</span><button class="xy-modal-close" onclick="closeExtrapolationDialog()">X</button></div>
+<div class="xy-modal-sub">Mentat-style contour controls for the current output variable.</div>
+<div class="xy-modal-field" style="margin-bottom:10px">
+<label for="legend-extrap-standard">Visualization Standard</label>
+<select id="legend-extrap-standard" onchange="onExtrapolationStandardPresetInput()"></select>
+</div>
+<div class="xy-modal-grid2">
+<div class="xy-modal-field">
+<label for="legend-extrap-method">Extrapolation Method</label>
+<select id="legend-extrap-method" onchange="onExtrapolationManualSettingInput()">
+<option value="linear">Linear</option>
+<option value="translate">Translate</option>
+<option value="average">Average</option>
+</select>
+</div>
+<div class="xy-modal-field">
+<label for="legend-extrap-nodal-avg">Nodal Averaging</label>
+<select id="legend-extrap-nodal-avg" onchange="onExtrapolationManualSettingInput()">
+<option value="off">Off</option>
+<option value="on">On</option>
+</select>
+</div>
+</div>
+<div class="xy-modal-field">
+<label for="legend-extrap-standard-info">Information</label>
+<div id="legend-extrap-standard-info" class="legend-extrap-info">Select a visualization standard to load the mapped Mentat extrapolation settings from CMO_031_C.pdf.</div>
+</div>
+<div class="xy-modal-actions">
+<button class="xy-btn" onclick="closeExtrapolationDialog()">Close</button>
+<button class="xy-btn" onclick="resetExtrapolationSettings()">Reset</button>
+<button class="xy-btn xy-btn-forecast" onclick="applyExtrapolationDialog()">Apply</button>
+</div>
+</div>
+</div>
 <div id="st">Ready</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -2255,6 +2359,11 @@ const OUT_STATE_TAG_MAP=''' + output_state_tag_map_json + ''';
 const OUT_STATE_CACHE={};
 const VAR_LOCS=''' + json.dumps(var_locations, separators=(',', ':')) + ''';
 const VIRTUAL_DISPLACEMENT_OUTPUT=''' + ('true' if virtual_displacement_output else 'false') + ''';
+const EXTRAPOLATION_STANDARD_PRESETS=''' + json.dumps(EXTRAPOLATION_STANDARD_PRESETS, separators=(',', ':')) + ''';
+const EXTRAPOLATION_STANDARD_PRESET_MAP={};
+EXTRAPOLATION_STANDARD_PRESETS.forEach(function(p){
+if(p&&p.name!==undefined&&p.name!==null)EXTRAPOLATION_STANDARD_PRESET_MAP[String(p.name)]=p;
+});
 function getStateNodePayload(sid){
 if(!sid)return null;
 if(Object.prototype.hasOwnProperty.call(STATE_NODE_PAYLOAD_CACHE,sid))return STATE_NODE_PAYLOAD_CACHE[sid];
@@ -2379,6 +2488,238 @@ document.getElementById('st').textContent='Output component changed to: '+getCur
 }else if(currentVar==='Displacement'){
 document.getElementById('st').textContent='Output changed to: '+getCurrentVarDisplayName()+' - Select an increment';
 }
+}
+function normalizeExtrapolationMethod(mode){
+var m=String(mode||'linear').toLowerCase();
+return (m==='translate'||m==='average'||m==='linear')?m:'linear';
+}
+function normalizeNodalAveragingMode(mode){
+return String(mode||'off').toLowerCase()==='on'?'on':'off';
+}
+function getExtrapolationStandardPreset(name){
+if(name===undefined||name===null)return null;
+var key=String(name);
+return Object.prototype.hasOwnProperty.call(EXTRAPOLATION_STANDARD_PRESET_MAP,key)?EXTRAPOLATION_STANDARD_PRESET_MAP[key]:null;
+}
+function populateExtrapolationStandardOptions(){
+var sel=document.getElementById('legend-extrap-standard');
+if(!sel||sel.dataset.loaded==='1')return;
+var html=['<option value="">Custom / Manual</option>'];
+EXTRAPOLATION_STANDARD_PRESETS.forEach(function(p){
+if(!p||!p.name)return;
+html.push('<option value="'+p.name+'">'+p.name+'</option>');
+});
+sel.innerHTML=html.join('');
+sel.dataset.loaded='1';
+}
+function normalizeExtrapolationStandardPresetName(name,method,nodalAvg){
+if(name===undefined||name===null||String(name).trim()==='')return '';
+var preset=getExtrapolationStandardPreset(name);
+if(!preset)return '';
+if(preset.method&&normalizeExtrapolationMethod(preset.method)!==normalizeExtrapolationMethod(method))return '';
+if(preset.avg&&normalizeNodalAveragingMode(preset.avg)!==normalizeNodalAveragingMode(nodalAvg))return '';
+return String(preset.name);
+}
+function getPendingExtrapolationStandardPreset(){
+var sel=document.getElementById('legend-extrap-standard');
+if(sel&&sel.value)return getExtrapolationStandardPreset(sel.value);
+return getExtrapolationStandardPreset(extrapolationStandardPresetName);
+}
+function getPendingExtrapolationNodalAveraging(){
+var avgEl=document.getElementById('legend-extrap-nodal-avg');
+return normalizeNodalAveragingMode(avgEl?avgEl.value:extrapolationNodalAveraging);
+}
+function refreshExtrapolationStandardInfo(){
+var infoEl=document.getElementById('legend-extrap-standard-info');
+if(!infoEl)return;
+var preset=getPendingExtrapolationStandardPreset();
+if(!preset){
+infoEl.textContent='Select a visualization standard to load the mapped Mentat extrapolation settings from CMO_031_C.pdf.';
+return;
+}
+infoEl.textContent=preset.info||String(preset.name||'');
+}
+function syncExtrapolationStandardUiFromState(){
+populateExtrapolationStandardOptions();
+var sel=document.getElementById('legend-extrap-standard');
+if(sel)sel.value=normalizeExtrapolationStandardPresetName(extrapolationStandardPresetName,extrapolationMethod,extrapolationNodalAveraging);
+refreshExtrapolationStandardInfo();
+}
+function onExtrapolationStandardPresetInput(){
+populateExtrapolationStandardOptions();
+var sel=document.getElementById('legend-extrap-standard');
+var preset=sel?getExtrapolationStandardPreset(sel.value):null;
+var methEl=document.getElementById('legend-extrap-method');
+var avgEl=document.getElementById('legend-extrap-nodal-avg');
+if(preset){
+if(preset.method&&methEl)methEl.value=normalizeExtrapolationMethod(preset.method);
+if(preset.avg&&avgEl)avgEl.value=normalizeNodalAveragingMode(preset.avg);
+}
+refreshExtrapolationStandardInfo();
+var noteEl=document.getElementById('legend-extrap-note');
+if(noteEl)noteEl.textContent=getExtrapolationDialogNoteText();
+}
+function onExtrapolationManualSettingInput(){
+populateExtrapolationStandardOptions();
+var sel=document.getElementById('legend-extrap-standard');
+if(!sel){
+refreshExtrapolationStandardInfo();
+return;
+}
+var preset=getExtrapolationStandardPreset(sel.value);
+var methEl=document.getElementById('legend-extrap-method');
+var avgEl=document.getElementById('legend-extrap-nodal-avg');
+if(preset){
+if((preset.method&&normalizeExtrapolationMethod(methEl?methEl.value:'linear')!==normalizeExtrapolationMethod(preset.method))||
+   (preset.avg&&normalizeNodalAveragingMode(avgEl?avgEl.value:'off')!==normalizeNodalAveragingMode(preset.avg))){
+sel.value='';
+}
+}
+refreshExtrapolationStandardInfo();
+var noteEl=document.getElementById('legend-extrap-note');
+if(noteEl)noteEl.textContent=getExtrapolationDialogNoteText();
+}
+function extrapolationMethodLabel(mode){
+var m=normalizeExtrapolationMethod(mode);
+if(m==='translate')return 'Translate';
+if(m==='average')return 'Average';
+return 'Linear';
+}
+function isElementBasedVarForExtrapolation(varName){
+var v=(varName===undefined||varName===null)?currentVar:varName;
+return (VAR_LOCS[v]||'node')==='element';
+}
+function isElementLocalContourMode(){
+return !centroidMode&&CENTROID_EXPORTED&&isElementBasedVarForExtrapolation(currentVar)&&normalizeNodalAveragingMode(extrapolationNodalAveraging)==='off';
+}
+function clearPinnedNodesOnly(){
+if(pinnedNodes.length===0)return;
+pinnedMarkers.forEach(function(m){sc.remove(m);});
+pinnedLabels.forEach(function(el){if(el.parentNode)el.parentNode.removeChild(el);});
+pinnedNodes=[];pinnedMarkers=[];pinnedLabels=[];
+showTableFormIfMultiple();
+}
+function refreshValueLookupHint(){
+var hint=document.getElementById('val-lookup-hint');
+if(!hint)return;
+if(isElementLocalContourMode())hint.textContent='Enter element IDs (e.g. 1,5,12)';
+else hint.textContent='Enter node IDs, or E1,E5 for elements';
+}
+function refreshCentroidInfoText(){
+var ci=document.getElementById('centroid-info');
+if(!ci)return;
+if(!CENTROID_EXPORTED||VIEWER_MODE==='harmonic'){
+ci.textContent='(not exported)';
+return;
+}
+if(centroidMode){
+ci.textContent=isElementBasedVarForExtrapolation(currentVar)?'(element values)':'(averaged nodal values)';
+return;
+}
+if(isElementBasedVarForExtrapolation(currentVar)){
+ci.textContent=isElementLocalContourMode()?'(element-local contour)':'(shared-node contour)';
+return;
+}
+ci.textContent='(native nodal contour)';
+}
+function getExtrapolationSummaryText(){
+var tail='Native nodal contour';
+if(isElementBasedVarForExtrapolation(currentVar))tail=isElementLocalContourMode()?'Element-local contour':'Shared-node contour';
+return extrapolationMethodLabel(extrapolationMethod)+' | Nodal Avg '+(normalizeNodalAveragingMode(extrapolationNodalAveraging)==='on'?'On':'Off')+' | '+tail;
+}
+function getLegendDataSourceInfo(){
+if(isElementLocalContourMode())return ' (element-local contour)';
+if(isElementBasedVarForExtrapolation(currentVar))return ' (shared-node contour)';
+return '';
+}
+function getExtrapolationDialogNoteText(){
+var preset=getPendingExtrapolationStandardPreset();
+if(!isElementBasedVarForExtrapolation(currentVar)){
+var txt='The current variable is already stored as nodal data in this VMAP. Mentat extrapolation controls are shown for parity, but the displayed contour already comes from nodal values.';
+if(preset&&(!preset.method||!preset.avg))txt+=' The selected visualization standard does not list explicit Extrapolation Method and Nodal Averaging values in CMO_031_C_3D_VIEWER.docx.';
+return txt;
+}
+if(!CENTROID_EXPORTED){
+var txt2='Element-local extrapolation display needs per-element data in the HTML. Regenerate the viewer with extrapolation element data enabled.';
+if(preset&&(!preset.method||!preset.avg))txt2+=' The selected visualization standard does not list explicit Extrapolation Method and Nodal Averaging values in CMO_031_C_3D_VIEWER.docx.';
+return txt2;
+}
+if(getPendingExtrapolationNodalAveraging()==='off'){
+var txt3='Marc Mentat offers Linear, Translate and Average together with Nodal Averaging On/Off. In this VMAP export the viewer has one scalar per element here, so with Nodal Averaging Off it shows an element-local contour.';
+if(preset&&(!preset.method||!preset.avg))txt3+=' The selected visualization standard does not list explicit Extrapolation Method and Nodal Averaging values in CMO_031_C_3D_VIEWER.docx.';
+return txt3;
+}
+var txt4='Marc Mentat offers Linear, Translate and Average together with Nodal Averaging On/Off. With this VMAP payload, the strongest visible change is the Nodal Averaging toggle; Linear, Translate and Average can become visually equivalent without element corner or integration-point values.';
+if(preset&&(!preset.method||!preset.avg))txt4+=' The selected visualization standard does not list explicit Extrapolation Method and Nodal Averaging values in CMO_031_C_3D_VIEWER.docx.';
+return txt4;
+}
+function refreshExtrapolationSummary(){
+var sumEl=document.getElementById('legend-extrap-summary');
+if(sumEl)sumEl.textContent=getExtrapolationSummaryText();
+var methEl=document.getElementById('legend-extrap-method');
+if(methEl)methEl.value=normalizeExtrapolationMethod(extrapolationMethod);
+var avgEl=document.getElementById('legend-extrap-nodal-avg');
+if(avgEl)avgEl.value=normalizeNodalAveragingMode(extrapolationNodalAveraging);
+syncExtrapolationStandardUiFromState();
+var noteEl=document.getElementById('legend-extrap-note');
+if(noteEl)noteEl.textContent=getExtrapolationDialogNoteText();
+refreshValueLookupHint();
+refreshCentroidInfoText();
+}
+function openExtrapolationDialog(){
+refreshExtrapolationSummary();
+var ov=document.getElementById('legend-extrapolation-overlay');
+if(ov)ov.style.display='flex';
+}
+function closeExtrapolationDialog(){
+var ov=document.getElementById('legend-extrapolation-overlay');
+if(ov)ov.style.display='none';
+}
+function applyExtrapolationSettings(method,nodalAvg,opts){
+opts=opts||{};
+var nextMethod=normalizeExtrapolationMethod(method);
+var nextAvg=normalizeNodalAveragingMode(nodalAvg);
+var nextPresetName=normalizeExtrapolationStandardPresetName(
+opts.standardPresetName!==undefined?opts.standardPresetName:extrapolationStandardPresetName,
+nextMethod,
+nextAvg
+);
+var prevElementDisplay=centroidMode||isElementLocalContourMode();
+var nextElementDisplay=centroidMode||(CENTROID_EXPORTED&&isElementBasedVarForExtrapolation(currentVar)&&nextAvg==='off');
+var changed=(extrapolationMethod!==nextMethod)||(extrapolationNodalAveraging!==nextAvg);
+extrapolationMethod=nextMethod;
+extrapolationNodalAveraging=nextAvg;
+extrapolationStandardPresetName=nextPresetName;
+if(prevElementDisplay!==nextElementDisplay){
+hideValueTooltip();
+lastValueTooltipInfo=null;
+hoveredElemIdx=-1;
+if(highlightSphere)highlightSphere.visible=false;
+if(showValues||pinnedNodes.length>0||pinnedElems.length>0||tableFormVisible)clearValuePinsAndTable();
+}
+if(isElementLocalContourMode())clearPinnedNodesOnly();
+refreshExtrapolationSummary();
+if(cst&&AD[cst]){
+legendAutoResetPending=true;
+ucr(AD[cst]);
+rebuildCurrentMeshColors();
+if(pinnedNodes.length>0||pinnedElems.length>0)updatePinnedValues();
+updatePinnedPositions();
+}
+if(!opts.keepDialog)closeExtrapolationDialog();
+if(!opts.silent&&changed){
+document.getElementById('st').textContent='Extrapolation: '+getExtrapolationSummaryText();
+}
+}
+function applyExtrapolationDialog(){
+var methEl=document.getElementById('legend-extrap-method');
+var avgEl=document.getElementById('legend-extrap-nodal-avg');
+var presetEl=document.getElementById('legend-extrap-standard');
+applyExtrapolationSettings(methEl?methEl.value:'linear',avgEl?avgEl.value:'off',{standardPresetName:presetEl?presetEl.value:''});
+}
+function resetExtrapolationSettings(){
+applyExtrapolationSettings('linear','off',{keepDialog:true,standardPresetName:''});
+refreshExtrapolationSummary();
 }
 function isVirtualDisplacementVar(v){
 return !!(VIRTUAL_DISPLACEMENT_OUTPUT&&v==='Displacement'&&(!OUT_STATE_INDEX||!OUT_STATE_INDEX[v]||OUT_STATE_INDEX[v].length===0));
@@ -2598,7 +2939,7 @@ const CENTROID_EXPORTED=''' + ('true' if export_centroid else 'false') + ''';
 const ALL_EDGES_EXPORTED=''' + ('true' if export_all_edges else 'false') + ''';
 const EXTERNAL_SURFACE_ONLY=''' + ('true' if harmonic_mode else 'false') + ''';
 const DEFAULT_SCALE_FACTOR=''' + harmonic_initial_scale_text + ''';
-const BUILD_REV="6.0.0-patch-2026-03-08-c";
+const BUILD_REV="6.1.1-zoomvalues-2026-04-01";
 const LOGO_URI="''' + (logo_data_uri if logo_data_uri else "") + '''";
 var fileTitleOverlayEl=document.getElementById('file-title-overlay');
 if(fileTitleOverlayEl)fileTitleOverlayEl.textContent=HTMLNAME+'.html';
@@ -2623,7 +2964,7 @@ let featureEg=null,edgeMode='feature';
 let noContour=false;
 const MAX_FULL_EDGES_FACE_COUNT=180000;
 let autoEdgeFallbackNotified=false;
-let measMode='off',measNodes=[],measMarkers=[],measLine=null,measAngleLine=null;
+let measMode='off',measDraft=null,measGroups=[],measLabelCounter=0,measureIdSeed=1,measDialogRemovalId=null;
 let measHighlightSphere=null;
 let pinnedNodes=[],pinnedMarkers=[],pinnedLabels=[];
 let pinnedElems=[],pinnedElemMarkers=[],pinnedElemLabels=[],pinnedElemFaces=[];
@@ -2670,6 +3011,9 @@ let dataMin=CR[0],dataMax=CR[1];
 let discreteMode=true,N_DISC=12;
 let legendValueFormat='float',legendFloatDecimals=3;
 let legendColorMapId='1';
+let extrapolationMethod='linear';
+let extrapolationNodalAveraging='off';
+let extrapolationStandardPresetName='';
 const DISP_COMPONENT_LABELS={mag:'Displacement Mag.',x:'Displacement X',y:'Displacement Y',z:'Displacement Z'};
 let displacementComponent='mag';
 let legendCustomValues=null,legendCustomColors=null;
@@ -2731,6 +3075,7 @@ let lastFastNormalUpdateMs=0;
 // Sheet system
 let xySheets=[{title:'Sheet 1',curves:[],selectedIdx:-1,editingIdx:-1,pinned:[],userRange:{xmin:'auto',xmax:'auto',ymin:'auto',ymax:'auto'},secUserRange:{ymin:'auto',ymax:'auto'},appliedRange:{xmin:'auto',xmax:'auto',ymin:'auto',ymax:'auto'},secAppliedRange:{ymin:'auto',ymax:'auto'},axisNames:{xname:'X',yname:'Y',syname:'Y (R)'},plotTitle:'XY Plot'}];
 let xyActiveSheet=0;
+let sidebarCardDragEl=null,sidebarCardPlaceholder=null,sidebarCardHandleArmedId=null;
 
 function getViewW(){
 var pw=xyPlotVisible?Math.floor(window.innerWidth/3):0;
@@ -2892,7 +3237,7 @@ removeLegendExtremeVisual('min');
 
 function getVisibleExtremaTargets(){
 var out={max:null,min:null};
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 var cR=centroidDataMax-centroidDataMin;
 if(Math.abs(cR)<1e-30)cR=1;
 for(var ek in visibleElemMap){
@@ -3049,14 +3394,14 @@ function tgLegendMaxMode(){
 legendMaxMode=!legendMaxMode;
 refreshLegendExtremeButtons();
 updateLegendExtremaTargets();
-if(tableFormVisible&&valueInfoVisible())updateTableForm();
+if(tableFormVisible)updateTableForm();
 }
 
 function tgLegendMinMode(){
 legendMinMode=!legendMinMode;
 refreshLegendExtremeButtons();
 updateLegendExtremaTargets();
-if(tableFormVisible&&valueInfoVisible())updateTableForm();
+if(tableFormVisible)updateTableForm();
 }
 
 function updateViewerCursorForModes(){
@@ -4021,6 +4366,7 @@ function removeDialogBoxById(id){
 for(var i=0;i<dialogBoxes.length;i++){
 if(dialogBoxes[i].id===id){
 var b=dialogBoxes[i];
+if(isMeasureGroupBox(b)&&measDialogRemovalId!==id){removeMeasureGroupById(b.measureGroupId);return;}
 if(b.el&&b.el.parentNode)b.el.parentNode.removeChild(b.el);
 dialogBoxes.splice(i,1);
 if(dialogConnectPendingId===id)dialogConnectPendingId=null;
@@ -4034,23 +4380,14 @@ updateDialogBoxesVisuals();
 }
 
 function cleanDialogBoxes(){
-var container=document.getElementById('dialog-box-container');
-while(dialogBoxes.length>0){
-var b=dialogBoxes.pop();
-if(b.el&&b.el.parentNode)b.el.parentNode.removeChild(b.el);
-}
-if(container){
-var stale=container.querySelectorAll('.dialog-box');
-for(var si=0;si<stale.length;si++){
-var el=stale[si];
-if(el&&el.parentNode===container)container.removeChild(el);
-}
-}
+var ids=[];
+dialogBoxes.forEach(function(b){if(!isMeasureGroupBox(b))ids.push(b.id);});
+ids.forEach(function(id){removeDialogBoxById(id);});
 dialogConnectPendingId=null;
 dialogAddArmed=dialogMode;
-dialogActiveId=null;
-closeDialogEditPopup();
-closeDialogFontPopup();
+if(dialogActiveId!==null&&!getDialogById(dialogActiveId))dialogActiveId=null;
+if(dialogEditBoxId!==null&&!getDialogById(dialogEditBoxId))closeDialogEditPopup();
+if(dialogFontBoxId!==null&&!getDialogById(dialogFontBoxId))closeDialogFontPopup();
 hideDialogPreview();
 updateDialogBoxesVisuals();
 document.getElementById('st').textContent='All dialog boxes removed';
@@ -4062,6 +4399,8 @@ return !!(box&&box.nodeIdx!==undefined&&box.nodeIdx!==null&&box.nodeIdx>=0);
 
 function refreshDialogConnectButton(box){
 if(!box||!box.linkBtn)return;
+if(isMeasureGroupBox(box)){box.linkBtn.style.display='none';return;}
+box.linkBtn.style.display='inline-block';
 if(isDialogConnected(box)){
 box.linkBtn.textContent='D';
 box.linkBtn.title='Disconnect from node';
@@ -4075,6 +4414,7 @@ box.linkBtn.classList.remove('dialog-btn-disconnect');
 
 function refreshDialogCopyButton(box){
 if(!box||!box.copyBtn)return;
+if(isMeasureGroupBox(box)){box.copyBtn.style.display='none';return;}
 box.copyBtn.style.display=isForecastDialogBox(box)?'inline-block':'none';
 }
 
@@ -5022,7 +5362,7 @@ if(hits.length>0){
 var fi=hits[0].faceIndex;
 var tri=visibleFaces[fi];
 if(tri){
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 // Centroid mode: show element value
 var ei=visibleFaceElemIdx[fi];
 if(ei!==undefined&&ei<centroidRawColors.length){
@@ -5168,7 +5508,7 @@ if(hits.length>0){
 var fi=hits[0].faceIndex;
 var tri=visibleFaces[fi];
 if(tri){
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 // Pin element in centroid mode
 var ei=hoveredElemIdx>=0?hoveredElemIdx:visibleFaceElemIdx[fi];
 if(ei!==undefined&&ei>=0)pinElemValue(ei,fi);
@@ -5190,7 +5530,7 @@ if((e.button===0&&ctrlRotAxis==='z')||(e.button===1&&ctrlRotAxis==='y')||(e.butt
 cvEl.oncontextmenu=e=>e.preventDefault();
 cvEl.onauxclick=e=>e.preventDefault();
 cvEl.onmouseleave=function(){ctrlRotAxis=null;valTooltipInvalidUntilMove=false;hideValueTooltip();if(highlightSphere)highlightSphere.visible=false;if(measHighlightSphere)measHighlightSphere.visible=false;highlightedNodeIdx=-1;hoveredElemIdx=-1;hideDialogPreview();clearHideSelectionOverlay();clearHideHoverHighlight();};
-cvEl.onwheel=e=>{e.preventDefault();camDist*=e.deltaY>0?1.1:0.9;camDist=Math.max(B*0.5,Math.min(B*80,camDist));uc()};
+cvEl.onwheel=e=>{e.preventDefault();camDist*=e.deltaY>0?1.1:0.9;camDist=Math.max(B*0.1,Math.min(B*80,camDist));uc()};
 window.onresize=onResize;
 if(!legendOutsideDblInit){
 document.addEventListener('dblclick',function(e){
@@ -5206,29 +5546,18 @@ safeViewerInitStep('increment list',function(){pss();});
 var ssEl=document.getElementById('ss');
 if(ssEl&&ssEl.options&&ssEl.options.length<=1)safeViewerInitStep('increment list fallback',function(){pssFallback();});
 safeViewerInitStep('output ui',function(){refreshDisplacementComponentUi();});
+safeViewerInitStep('extrapolation ui',function(){refreshExtrapolationSummary();});
 safeViewerInitStep('legend values',function(){ulv(curMin,curMax);});
 safeViewerInitStep('legend format controls',function(){updateLegendFormatControls();});
 safeViewerInitStep('animation range labels',function(){ugrl();});
 safeViewerInitStep('rotation cut ui',function(){updateRotationCutUi(cutPlanes.rotation);});
 safeViewerInitStep('dialog box system',function(){initDialogBoxSystem();});
+safeViewerInitStep('sidebar cards',function(){initSidebarCards();});
 safeViewerInitStep('hide connected button',function(){refreshHideAllConnectedButton();});
 safeViewerInitStep('legend extreme buttons',function(){refreshLegendExtremeButtons();});
 safeViewerInitStep('animation mode button',function(){refreshAnimHarmonicButton();});
 safeViewerInitStep('edge mode availability',function(){syncAllEdgesOptionAvailability();});
-var ccb=document.getElementById('centroid-mode');
-if(ccb){
-if(!CENTROID_EXPORTED||VIEWER_MODE==='harmonic'){
-ccb.checked=false;
-ccb.disabled=true;
-centroidMode=false;
-if(ccb.parentNode)ccb.parentNode.style.opacity='0.55';
-var ci=document.getElementById('centroid-info');
-if(ci)ci.textContent='(not exported)';
-}else{
-ccb.disabled=false;
-if(ccb.parentNode)ccb.parentNode.style.opacity='1';
-}
-}
+refreshExtrapolationSummary();
 captureBaseHtmlForSaveFile();
 safeViewerInitStep('xy sheet tabs',function(){xyRenderSheetTabs();});
 safeViewerInitStep('xy animation info button',function(){xyRefreshAnimInfoButton();});
@@ -5372,30 +5701,27 @@ if(uMs)uMs.visible=true;
 if(uEg)uEg.visible=true;
 }
 function valueInfoVisible(){return showValues;}
+function pinnedValueWindowsVisible(){return showValues||pinnedNodes.length>0||pinnedElems.length>0;}
 function setValueWindowsVisible(on){
 var bar=document.getElementById('val-lookup-bar');if(bar)bar.style.display=on?'block':'none';
 if(!on){
 valTooltipInvalidUntilMove=false;
 hideValueTooltip();
 if(highlightSphere)highlightSphere.visible=false;highlightedNodeIdx=-1;
-pinnedLabels.forEach(function(el){el.style.display='none';});
-pinnedMarkers.forEach(function(m){m.visible=false;});
-pinnedElemLabels.forEach(function(el){el.style.display='none';});
-pinnedElemMarkers.forEach(function(m){m.visible=false;});
-if(tableFormVisible){var win=document.getElementById('table-form-window');if(win)win.style.display='none';}
-}else{
-var linksOn=tableLinksActive();
-pinnedLabels.forEach(function(el){el.style.display=linksOn?'none':'block';});
-pinnedMarkers.forEach(function(m){m.visible=true;});
-pinnedElemLabels.forEach(function(el){el.style.display=linksOn?'none':'block';});
-pinnedElemMarkers.forEach(function(m){m.visible=true;});
-if(tableFormVisible){var win=document.getElementById('table-form-window');if(win){win.style.display='flex';updateTableForm();}}
+}
+var win=document.getElementById('table-form-window');
+if(tableFormVisible){
+if(win)win.style.display='flex';
+updateTableForm();
+}else if(win){
+win.style.display='none';
 }
 refreshTableFormLinksButton();
+updatePinnedPositions();
 updateDialogBoxesVisuals();
 }
 function updateValueWindowsForCut(){
-if(showValues&&tableFormVisible)updateTableForm();
+if(tableFormVisible)updateTableForm();
 }
 function tgv(show){showValues=show;setValueWindowsVisible(show);updateValueWindowsForCut();}
 
@@ -5407,10 +5733,12 @@ var nPinned=0,ePinned=0,errors=[];
 parts.forEach(function(p){
 p=p.trim();if(!p)return;
 var isElem=false;
-if(p.toUpperCase().charAt(0)==='E'){isElem=true;p=p.substring(1);}
+var modeChar=p.toUpperCase().charAt(0);
+var forceNode=(modeChar==='N');
+if(modeChar==='E'||modeChar==='N'){isElem=(modeChar==='E');p=p.substring(1);}
 var id=parseInt(p);
 if(isNaN(id)||id<0){errors.push(p);return;}
-if(isElem||centroidMode){
+if(isElem||centroidMode||(isElementLocalContourMode()&&!forceNode)){
 // Pin element - convert real ID to array index
 var eidx=realElemIdToIdx(id);
 if(eidx>=0&&centroidRawColors&&eidx<centroidRawColors.length&&isElemVisibleNow(eidx)){
@@ -5442,7 +5770,7 @@ showTableFormIfMultiple();
 let tableFormVisible=false;
 let tableFormLinksOn=false;
 let tfResizeObserver=null;
-function tableLinksActive(){return tableFormVisible&&tableFormLinksOn&&valueInfoVisible();}
+function tableLinksActive(){return tableFormVisible&&tableFormLinksOn;}
 function fitTableFormCellsToWindow(){
 var win=document.getElementById('table-form-window');
 var body=document.getElementById('table-form-body');
@@ -5496,7 +5824,7 @@ function refreshTableFormLinksButton(){
 var wrap=document.getElementById('table-form-links-wrap');
 var btn=document.getElementById('table-form-links-btn');
 var fontRow=document.getElementById('table-form-font-row');
-if(fontRow)fontRow.style.display=(tableFormVisible&&valueInfoVisible())?'flex':'none';
+if(fontRow)fontRow.style.display=tableFormVisible?'flex':'none';
 if(!wrap||!btn){
 if(tableFormVisible)applyTableFormFontSize();
 if(tableFormVisible)fitTableFormCellsToWindow();
@@ -5515,7 +5843,7 @@ if(tableFormVisible)fitTableFormCellsToWindow();
 }
 function tgTableFormLinks(force){
 var on=(force===undefined)?!tableFormLinksOn:!!force;
-if(!tableFormVisible||!valueInfoVisible())on=false;
+if(!tableFormVisible)on=false;
 tableFormLinksOn=on;
 refreshTableFormLinksButton();
 updatePinnedPositions();
@@ -5526,7 +5854,7 @@ function tgTableForm(on){
 tableFormVisible=on;
 var win=document.getElementById('table-form-window');
 var row=document.getElementById('table-form-row');
-win.style.display=(on&&valueInfoVisible())?'flex':'none';
+win.style.display=on?'flex':'none';
 if(on){
 // Pre-fill with currently pinned nodes/elements
 var ids=[];
@@ -5600,8 +5928,8 @@ var p0=p.toUpperCase().charAt(0);
 if(p0==='E'||p0==='N'){isElem=(p0==='E');p=p.substring(1);}
 var id=parseInt(p);
 if(isNaN(id)||id<0)return;
-if(centroidMode&&!isElem)isElem=true;
-if(!centroidMode&&p0!=='E'&&p0!=='N'){
+if((centroidMode||isElementLocalContourMode())&&p0!=='N'&&!isElem)isElem=true;
+if(!(centroidMode||isElementLocalContourMode())&&p0!=='E'&&p0!=='N'){
 var hint=tfIdTypeHint[String(id)];
 if(hint==='E')isElem=true;
 }
@@ -5609,7 +5937,7 @@ if(hint==='E')isElem=true;
 if(isElem){var idx=realElemIdToIdx(id);if(idx>=0)addItem(idx,isElem);}
 else{var idx=realNodeIdToIdx(id);if(idx>=0)addItem(idx,isElem);}
 });
-if(centroidMode){
+if(centroidMode||isElementLocalContourMode()){
 pinnedElems.forEach(function(e){addItem(e,true);});
 }else{
 pinnedNodes.forEach(function(n){addItem(n,false);});
@@ -6036,6 +6364,114 @@ var text=lines.join('\\n');
 var html='<table style="border-collapse:collapse">'+htmlRows.join('')+'</table>';
 tfCopyWithHtml(text,html,lines.length);
 }
+function getSidebarPanelZone(){
+return document.getElementById('sidebar-panel-zone');
+}
+function getSidebarPanelItems(){
+var zone=getSidebarPanelZone();
+if(!zone)return [];
+return Array.prototype.slice.call(zone.children).filter(function(el){
+return !!(el&&el.getAttribute&&el.getAttribute('data-panel-id'));
+});
+}
+function getSidebarPanelOrder(){
+return getSidebarPanelItems().map(function(el){return el.getAttribute('data-panel-id');}).filter(function(id){return !!id;});
+}
+function applySidebarPanelOrder(order,silent){
+if(!Array.isArray(order)||order.length===0)return;
+var zone=getSidebarPanelZone();
+if(!zone)return;
+var items=getSidebarPanelItems();
+var itemMap=Object.create(null);
+items.forEach(function(el){itemMap[el.getAttribute('data-panel-id')]=el;});
+order.forEach(function(id){
+if(itemMap[id]){
+zone.appendChild(itemMap[id]);
+delete itemMap[id];
+}
+});
+Object.keys(itemMap).forEach(function(id){zone.appendChild(itemMap[id]);});
+if(!silent&&document.getElementById('st'))document.getElementById('st').textContent='Sidebar cards reordered';
+}
+function getSidebarInsertBefore(clientY){
+var items=getSidebarPanelItems().filter(function(el){return el!==sidebarCardDragEl&&el!==sidebarCardPlaceholder;});
+var closest={offset:Number.NEGATIVE_INFINITY,el:null};
+items.forEach(function(el){
+var rect=el.getBoundingClientRect();
+var offset=clientY-(rect.top+rect.height*0.5);
+if(offset<0&&offset>closest.offset)closest={offset:offset,el:el};
+});
+return closest.el;
+}
+function finishSidebarCardDrag(){
+if(!sidebarCardDragEl)return;
+var zone=getSidebarPanelZone();
+if(zone&&sidebarCardPlaceholder&&sidebarCardPlaceholder.parentNode===zone){
+zone.insertBefore(sidebarCardDragEl,sidebarCardPlaceholder);
+}
+sidebarCardDragEl.style.display='';
+sidebarCardDragEl.classList.remove('dragging');
+if(sidebarCardPlaceholder&&sidebarCardPlaceholder.parentNode)sidebarCardPlaceholder.parentNode.removeChild(sidebarCardPlaceholder);
+sidebarCardDragEl=null;
+sidebarCardPlaceholder=null;
+sidebarCardHandleArmedId=null;
+if(document.getElementById('st'))document.getElementById('st').textContent='Sidebar cards reordered';
+}
+function initSidebarCards(){
+var zone=getSidebarPanelZone();
+if(!zone||zone.getAttribute('data-ready')==='1')return;
+zone.setAttribute('data-ready','1');
+var cards=Array.prototype.slice.call(zone.querySelectorAll('.sidebar-card[data-panel-id]'));
+cards.forEach(function(card){
+var id=card.getAttribute('data-panel-id');
+var handle=card.querySelector('.sidebar-card-handle')||card.querySelector('.pt');
+if(!id||!handle)return;
+card.setAttribute('draggable','true');
+handle.setAttribute('title','Drag to reorder');
+handle.addEventListener('mousedown',function(ev){
+if(ev.button!==0)return;
+sidebarCardHandleArmedId=id;
+});
+handle.addEventListener('mouseup',function(){sidebarCardHandleArmedId=null;});
+card.addEventListener('dragstart',function(ev){
+if(sidebarCardHandleArmedId!==id){
+ev.preventDefault();
+return;
+}
+sidebarCardDragEl=card;
+sidebarCardPlaceholder=document.createElement('div');
+sidebarCardPlaceholder.className='sidebar-card-placeholder';
+sidebarCardPlaceholder.style.height=Math.max(24,card.offsetHeight)+'px';
+card.classList.add('dragging');
+if(ev.dataTransfer){
+ev.dataTransfer.effectAllowed='move';
+try{ev.dataTransfer.setData('text/plain',id);}catch(e){}
+}
+zone.insertBefore(sidebarCardPlaceholder,card.nextSibling);
+setTimeout(function(){if(sidebarCardDragEl===card)card.style.display='none';},0);
+});
+card.addEventListener('dragend',finishSidebarCardDrag);
+});
+zone.addEventListener('dragover',function(ev){
+if(!sidebarCardDragEl)return;
+ev.preventDefault();
+var before=getSidebarInsertBefore(ev.clientY);
+if(before)zone.insertBefore(sidebarCardPlaceholder,before);
+else zone.appendChild(sidebarCardPlaceholder);
+var sb=document.getElementById('sb');
+if(sb){
+var rect=sb.getBoundingClientRect();
+if(ev.clientY<rect.top+60)sb.scrollTop-=18;
+else if(ev.clientY>rect.bottom-60)sb.scrollTop+=18;
+}
+});
+zone.addEventListener('drop',function(ev){
+if(!sidebarCardDragEl)return;
+ev.preventDefault();
+finishSidebarCardDrag();
+});
+document.addEventListener('mouseup',function(){sidebarCardHandleArmedId=null;});
+}
 // Make table form draggable
 (function(){
 var tfWin=null,tfHdr=null,tfDrag=false,tfOfs={x:0,y:0};
@@ -6158,6 +6594,7 @@ var dispNodes=getDisplayNodes();
 var cuts=getActiveCuts();
 var hasCuts=cuts.length>0;
 var linksOn=tableLinksActive();
+var keepPinnedVisible=pinnedValueWindowsVisible();
 for(var i=0;i<pinnedNodes.length;i++){
 var ni=pinnedNodes[i];
 if(ni>=dispNodes.length)continue;
@@ -6166,7 +6603,7 @@ pos3.project(ca);
 var sx=(pos3.x*0.5+0.5)*w+offsetLeft;
 var sy=(-pos3.y*0.5+0.5)*h+offsetTop;
 // Check if behind camera
-var show=showValues&&(pos3.z<=1)&&isNodeVisibleNow(ni)&&(!hasCuts||isPointVisibleByCuts(dispNodes[ni],cuts));
+var show=keepPinnedVisible&&(pos3.z<=1)&&isNodeVisibleNow(ni)&&(!hasCuts||isPointVisibleByCuts(dispNodes[ni],cuts));
 pinnedMarkers[i].visible=show;
 if(!show||linksOn){pinnedLabels[i].style.display='none';continue;}
 pinnedLabels[i].style.display='block';
@@ -6190,7 +6627,7 @@ return{x:sx,y:sy};
 }
 
 function drawPinnedOnCanvas(ctx,w,h){
-if(pinnedNodes.length===0||!showValues)return;
+if(pinnedNodes.length===0||!pinnedValueWindowsVisible())return;
 var dispNodes=getDisplayNodes();
 var cuts=getActiveCuts();
 var hasCuts=cuts.length>0;
@@ -6322,6 +6759,7 @@ var w=rect.width,h=rect.height;
 var offsetLeft=rect.left,offsetTop=rect.top;
 var useCuts=cuts&&cuts.length>0;
 var linksOn=tableLinksActive();
+var keepPinnedVisible=pinnedValueWindowsVisible();
 for(var i=0;i<pinnedElems.length;i++){
 // Use marker's already-computed 3D position (updated in updatePinnedElemValues)
 var mp=pinnedElemMarkers[i].position;
@@ -6329,7 +6767,7 @@ var pos3=new THREE.Vector3(mp.x,mp.y,mp.z);
 pos3.project(ca);
 var sx=(pos3.x*0.5+0.5)*w+offsetLeft;
 var sy=(-pos3.y*0.5+0.5)*h+offsetTop;
-var show=showValues&&(pos3.z<=1)&&isElemVisibleNow(pinnedElems[i])&&(!useCuts||isPointVisibleByCuts([mp.x,mp.y,mp.z],cuts));
+var show=keepPinnedVisible&&(pos3.z<=1)&&isElemVisibleNow(pinnedElems[i])&&(!useCuts||isPointVisibleByCuts([mp.x,mp.y,mp.z],cuts));
 pinnedElemMarkers[i].visible=show;
 if(!show||linksOn){pinnedElemLabels[i].style.display='none';continue;}
 pinnedElemLabels[i].style.display='block';
@@ -6354,7 +6792,7 @@ return null;
 }
 
 function drawPinnedElemsOnCanvas(ctx,w,h){
-if(pinnedElems.length===0||!showValues)return;
+if(pinnedElems.length===0||!pinnedValueWindowsVisible())return;
 var cuts=getActiveCuts();
 var hasCuts=cuts.length>0;
 var linksOn=tableLinksActive();
@@ -6415,7 +6853,7 @@ var sd=AD[cst];
 var cols=sd.colors?sd.colors.slice():null;
 rawColors=cols;
 centroidRawColors=sd.centroid_colors?sd.centroid_colors.slice():null;
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 cm(getRenderNodes(),cols);
 }else if(!dynamicLegend&&cols&&(Math.abs(curMin-dataMin)>1e-20||Math.abs(curMax-dataMax)>1e-20)){
 cols=remapColors(rawColors,dataMin,dataMax,curMin,curMax);
@@ -6469,51 +6907,8 @@ updatePinnedPositions();
 }
 }
 function tgCentroid(on){
-if(on&&!CENTROID_EXPORTED){
 centroidMode=false;
-var ccb=document.getElementById('centroid-mode');
-if(ccb)ccb.checked=false;
-document.getElementById('st').textContent='Centroid data not exported';
-return;
-}
-centroidMode=on;
-var loc=VAR_LOCS[currentVar];
-var dcCb=document.getElementById('dc');
-if(on){
-document.getElementById('centroid-info').textContent=loc==='element'?'(linear extrapolation)':'(averaged from extrapolated nodes)';
-// Force discrete ON and lock
-if(!discreteMode){dcCb.checked=true;tgd(true);}
-dcCb.disabled=true;dcCb.parentNode.style.opacity='0.5';
-document.getElementById('val-lookup-hint').textContent='Enter element IDs (e.g. 1,5,12)';
-// Clear pinned nodes when switching to centroid
-if(pinnedNodes.length>0){
-pinnedMarkers.forEach(function(m){sc.remove(m);});
-pinnedLabels.forEach(function(el){if(el.parentNode)el.parentNode.removeChild(el);});
-pinnedNodes=[];pinnedMarkers=[];pinnedLabels=[];
-}
-}else{
-document.getElementById('centroid-info').textContent=loc==='element'?'(linear extrapolation from IPs)':'(extrapolated nodal values)';
-// Unlock discrete checkbox
-dcCb.disabled=false;dcCb.parentNode.style.opacity='1';
-document.getElementById('val-lookup-hint').textContent='Enter node IDs, or E1,E5 for elements';
-// Clear pinned elements when switching to nodal
-if(pinnedElems.length>0){clearPinnedElems();}
-}
-// Force legend range to update to centroid/nodal data range
-if(cst&&AD[cst]){
-var sd=AD[cst];
-if(on&&sd.centroid_min!==undefined){
-dataMin=sd.centroid_min;dataMax=sd.centroid_max;
-}else{
-dataMin=sd.color_min;dataMax=sd.color_max;
-}
-curMin=dataMin;curMax=dataMax;
-if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
-updateLegendRangeInputs();
-ulv(curMin,curMax);updGrad();updCb();
-if(vrfEnabled)updateVRFLabels();
-asc();
-}
+refreshExtrapolationSummary();
 }
 function setBgColor(hex){
 if(sc)sc.background=new THREE.Color(hex);
@@ -6557,7 +6952,7 @@ if(!cst||!AD[cst])return;
 var sd=AD[cst];
 rawColors=sd.colors?sd.colors.slice():null;
 centroidRawColors=sd.centroid_colors?sd.centroid_colors.slice():null;
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 cm(getRenderNodes(),noContour?null:rawColors);
 }else{
 var drawColors=noContour?null:rawColors;
@@ -6717,7 +7112,7 @@ refreshValueTooltipFormat();
 if(pinnedNodes.length>0||pinnedElems.length>0)updatePinnedValues();
 if(tableFormVisible)updateTableForm();
 if(legendMaxMode||legendMinMode)updateLegendExtremaTargets();
-if(measMode!=='off'&&measNodes.length>=2)updateMeasurement();
+if(hasAnyMeasurements())updateMeasurement();
 }
 function updateLegendFormatControls(){
 var fmtSel=document.getElementById('leg-format');
@@ -6815,7 +7210,7 @@ ulv(curMin,curMax);
 updGrad();
 updCb();
 if(cst&&AD[cst]){
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 cm(getRenderNodes(),noContour?null:rawColors);
 }else if(rawColors){
 var displayColors=rawColors;
@@ -6834,8 +7229,8 @@ var si=parseInt(document.getElementById('gif-start').value);
 var ei=parseInt(document.getElementById('gif-end').value);
 var sIdx=Math.min(si,ei),eIdx=Math.max(si,ei);
 var gMin=Infinity,gMax=-Infinity;
-var mnKey=centroidMode?'centroid_min':'color_min';
-var mxKey=centroidMode?'centroid_max':'color_max';
+var mnKey=(centroidMode||isElementLocalContourMode())?'centroid_min':'color_min';
+var mxKey=(centroidMode||isElementLocalContourMode())?'centroid_max':'color_max';
 for(var ki=sIdx;ki<=eIdx;ki++){
 if(ki<SL.length){
 var sk=SL[ki].id;
@@ -6864,9 +7259,9 @@ updateLegendRangeInputs();
 ulv(curMin,curMax);updGrad();updCb();
 var csd=(cst?(AD[cst]||getStateData(currentVar,cst)):null);
 if(csd){
-if(centroidMode){dataMin=csd.centroid_min;dataMax=csd.centroid_max;}
+if(centroidMode||isElementLocalContourMode()){dataMin=csd.centroid_min;dataMax=csd.centroid_max;}
 else{dataMin=csd.color_min;dataMax=csd.color_max;}
-if(centroidMode&&centroidRawColors){cm(getRenderNodes(),rawColors);}
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){cm(getRenderNodes(),rawColors);}
 else if(rawColors){var rc=remapColors(rawColors,dataMin,dataMax,curMin,curMax);cm(getRenderNodes(),rc);}
 }
 }
@@ -6945,7 +7340,7 @@ return out;
 }
 function rebuildCurrentMeshColors(){
 if(!(cst&&AD[cst]))return;
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 cm(getRenderNodes(),noContour?null:rawColors);
 return;
 }
@@ -7037,16 +7432,23 @@ legendEditFocusColor=-1;
 legendValueFormat='float';
 legendFloatDecimals=3;
 legendColorMapId='1';
+extrapolationMethod='linear';
+extrapolationNodalAveraging='off';
 N_DISC=12;
 legFontSize=14;
 updateLegendFormatControls();
+refreshExtrapolationSummary();
 var lvlSel=document.getElementById('leg-levels');if(lvlSel)lvlSel.value='12';
 var fs=document.getElementById('leg-font-size');if(fs)fs.value='14';
 var fv=document.getElementById('leg-font-size-val');if(fv)fv.textContent='14';
+legendAutoResetPending=true;
+if(cst&&AD[cst]){ucr(AD[cst]);}
+else{
 updateLegendRangeInputs();
 ulv(curMin,curMax);
 updGrad();
 updCb();
+}
 rebuildCurrentMeshColors();
 document.getElementById('st').textContent='Legend reset to default';
 }
@@ -7056,7 +7458,7 @@ discreteMode=on;
 updGrad();
 updCb();
 if(!noContour&&cst&&AD[cst]){
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 cm(getRenderNodes(),rawColors);
 }else if(rawColors){
 var displayColors=rawColors;
@@ -7317,7 +7719,8 @@ var vrfSig='off';
 if(vrfEnabled){
 var lo=isFinite(vrfLo)?Number(vrfLo).toExponential(4):'0';
 var hi=isFinite(vrfHi)?Number(vrfHi).toExponential(4):'0';
-vrfSig=lo+':'+hi+':'+(centroidMode?'centroid':'nodal')+':'+(currentVar||'');
+var contourSig=centroidMode?'centroid':(isElementLocalContourMode()?'elementlocal':'nodal');
+vrfSig=lo+':'+hi+':'+contourSig+':'+(currentVar||'');
 }
 return [
 renderMode,
@@ -7449,7 +7852,8 @@ if(edSelAllOff)edSelAllOff.value='feature';
 meshNodesRef=nodes;
 curColors=colors;
 var cuts=getActiveCuts();
-var useCentroid=centroidMode&&centroidRawColors&&!noContour;
+var useElementLocalContour=isElementLocalContourMode()&&centroidRawColors&&!noContour;
+var useCentroid=(centroidMode||useElementLocalContour)&&centroidRawColors&&!noContour;
 var useSharpDiscrete=discreteMode&&!useCentroid&&!noContour;
 var renderMode=getMeshRenderMode(useCentroid,useSharpDiscrete);
 var topologyKey=buildMeshTopologyKey(renderMode);
@@ -7513,7 +7917,7 @@ faceList.push(visibleFaces.length-1);
 }
 for(var vi=0;vi<verts.length;vi++){visibleNodeMap[verts[vi]]=1;}
 
-// Centroid mode: uniform color per face from element value
+// Element-driven mode: uniform color per face from element value
 if(useCentroid){
 var eiFace=faceEi;
 if(eiFace!==undefined&&eiFace<centroidRawColors.length){
@@ -7632,7 +8036,7 @@ if(!isFaceVisible(f,nodes,cuts))return;
 // For boundary feature edges, also check VRF
 if(vrfEnabled&&!noContour){
 if(useCentroid&&centroidRawColors){
-// In centroid mode, check element value for this boundary face
+// In element-driven mode, check element value for this boundary face
 var bei=BFE[bfi];
 if(bei!==undefined&&bei<centroidRawColors.length){
 var rv=centroidDataMin+centroidRawColors[bei]*(centroidDataMax-centroidDataMin);
@@ -7668,7 +8072,7 @@ var bElem=BFE[bfi];
 if(bElem!==undefined&&bElem!==null&&bElem>=0&&isElemHidden(bElem))return;
 if(!isFaceVisible(f,nodes,cuts))return;
 if(useCentroid&&centroidRawColors){
-// In centroid mode, check element value
+// In element-driven mode, check element value
 var bei=BFE[bfi];
 if(bei!==undefined&&bei<centroidRawColors.length){
 var rv=centroidDataMin+centroidRawColors[bei]*(centroidDataMax-centroidDataMin);
@@ -7733,7 +8137,7 @@ ulv(curMin,curMax);
 updGrad();
 updCb();
 if(cst&&AD[cst]){
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 cm(getRenderNodes(),rawColors);
 }else if(rawColors){
 var rc=remapColors(rawColors,dataMin,dataMax,curMin,curMax);
@@ -7755,7 +8159,7 @@ updGrad();
 updCb();
 // Restore original colors
 if(cst&&AD[cst]){
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 cm(getRenderNodes(),rawColors);
 }else if(rawColors){
 cm(getRenderNodes(),rawColors.slice());
@@ -7872,13 +8276,7 @@ updateLegendRangeInputs();
 document.getElementById('leg-data-info').textContent='Data range: select an increment';
 document.getElementById('ss').value='';
 updateLegendStateMeta(null);
-// Update centroid info label for new variable
-var loc=VAR_LOCS[currentVar];
-if(centroidMode){
-document.getElementById('centroid-info').textContent=loc==='element'?'(linear extrapolation)':'(averaged from extrapolated nodes)';
-}else{
-document.getElementById('centroid-info').textContent=loc==='element'?'(linear extrapolation from IPs)':'(extrapolated nodal values)';
-}
+refreshExtrapolationSummary();
 cn=ON.slice();cm(getRenderNodes(),null);
 ulv(0,1);
 updGrad();
@@ -7961,11 +8359,11 @@ for(let i=0;i<ON.length;i++){
 const o=ON[i],d=(sdNodes[i]||o);
 cn.push([o[0]+(d[0]-o[0])*cs,o[1]+(d[1]-o[1])*cs,o[2]+(d[2]-o[2])*cs]);}
 cm(getRenderNodes(),drawColors);
-document.getElementById('st').textContent='Scale '+scaleText(cs)+'x applied ('+getCurrentVarDisplayName()+(centroidMode?' - Centroid':'')+')';
+document.getElementById('st').textContent='Scale '+scaleText(cs)+'x applied ('+getCurrentVarDisplayName()+')';
 }else{cm(ON,drawColors);
 document.getElementById('st').textContent='No displacement data';}
 // Update active measurement for new increment
-if(measMode!=='off'&&measNodes.length>=2)updateMeasurement();
+if(hasAnyMeasurements())updateMeasurement();
 // Update pinned/table values for new increment
 if(pinnedNodes.length>0||pinnedElems.length>0)updatePinnedValues();
 else if(tableFormVisible)updateTableForm();
@@ -7976,7 +8374,7 @@ if(!sd||sd.color_min===undefined||sd.color_max===undefined){ulv(0,1);return;}
 // Always update centroid ranges if available
 if(sd.centroid_min!==undefined){centroidDataMin=sd.centroid_min;centroidDataMax=sd.centroid_max;}
 // Set legend data range based on mode
-if(centroidMode&&sd.centroid_min!==undefined){
+if((centroidMode||isElementLocalContourMode())&&sd.centroid_min!==undefined){
 dataMin=sd.centroid_min;dataMax=sd.centroid_max;
 }else{
 dataMin=sd.color_min;dataMax=sd.color_max;
@@ -7987,20 +8385,19 @@ legendAutoResetPending=false;
 if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
 }
 updateLegendRangeInputs();
-var loc=VAR_LOCS[currentVar];
-var srcInfo=centroidMode?(loc==='element'?' (centroid - IP avg)':' (centroid - nodal avg)'):'';
+var srcInfo=getLegendDataSourceInfo();
 document.getElementById('leg-data-info').textContent='Data range: '+formatLegendNumber(dataMin)+' ~ '+formatLegendNumber(dataMax)+srcInfo;
 ulv(curMin,curMax);
 updGrad();updCb();
 if(vrfEnabled)updateVRFLabels();
 // For non-centroid mode with manual legend range, remap nodal colors
-if(!centroidMode&&!noContour&&!dynamicLegend&&rawColors&&(Math.abs(curMin-dataMin)>1e-20||Math.abs(curMax-dataMax)>1e-20)){
+if(!(centroidMode||isElementLocalContourMode())&&!noContour&&!dynamicLegend&&rawColors&&(Math.abs(curMin-dataMin)>1e-20||Math.abs(curMax-dataMax)>1e-20)){
 var rc=remapColors(rawColors,dataMin,dataMax,curMin,curMax);cm(getRenderNodes(),rc);}
 }
 
 function computeVisibleLegendRange(){
 var minV=Infinity,maxV=-Infinity;
-if(centroidMode&&centroidRawColors){
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){
 var cR=centroidDataMax-centroidDataMin;
 if(Math.abs(cR)<1e-30)cR=1;
 for(var ek in visibleElemMap){
@@ -8038,8 +8435,7 @@ return {min:minV,max:maxV};
 function syncLegendToVisibleRange(){
 if(!cst)return;
 var visRange=computeVisibleLegendRange();
-var loc=VAR_LOCS[currentVar];
-var srcInfo=centroidMode?(loc==='element'?' (centroid - IP avg)':' (centroid - nodal avg)'):'';
+var srcInfo=getLegendDataSourceInfo();
 if(dynamicLegend){
 var oldMin=curMin,oldMax=curMax;
 if(visRange){
@@ -8049,7 +8445,7 @@ curMin=dataMin;curMax=dataMax;
 }
 if(hasCustomLegend())legendCustomValues=buildLinearLegendValues(curMin,curMax);
 updateLegendRangeInputs();
-if(!legendVisibilityRebuildGuard&&!centroidMode&&!noContour&&rawColors){
+if(!legendVisibilityRebuildGuard&&!(centroidMode||isElementLocalContourMode())&&!noContour&&rawColors){
 var rangeChanged=(Math.abs(oldMin-curMin)>1e-20||Math.abs(oldMax-curMax)>1e-20);
 if(rangeChanged){
 legendVisibilityRebuildGuard=true;
@@ -8395,7 +8791,7 @@ var drawColors=noContour?null:sd.colors;
 var sdNodes=getStateNodes(cst);
 if(!sdNodes){
 cm(ON,drawColors);
-if(measMode!=='off'&&measNodes.length>=2)updateMeasurement();
+if(hasAnyMeasurements())updateMeasurement();
 if(pinnedNodes.length>0||pinnedElems.length>0)updatePinnedValues();
 else if(tableFormVisible){
 var nowNoDisp=(window&&window.performance&&window.performance.now)?window.performance.now():Date.now();
@@ -8419,7 +8815,7 @@ row[1]=o[1]+(d[1]-o[1])*amp;
 row[2]=o[2]+(d[2]-o[2])*amp;
 }
 cm(getRenderNodes(),drawColors);
-if(measMode!=='off'&&measNodes.length>=2)updateMeasurement();
+if(hasAnyMeasurements())updateMeasurement();
 if(pinnedNodes.length>0||pinnedElems.length>0)updatePinnedValues();
 else if(tableFormVisible){
 var now=(window&&window.performance&&window.performance.now)?window.performance.now():Date.now();
@@ -8629,51 +9025,40 @@ ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x
 ctx.closePath();ctx.fill();ctx.stroke();
 }
 function drawMeasOnCanvas(ctx,w,h){
-if(measMode==='off'||measNodes.length<2)return;
-var needed=measMode==='distance'?2:3;
-if(measNodes.length<needed)return;
+if(!hasAnyMeasurements())return;
+var dispNodes=getDisplayNodes();
+var cuts=getActiveCuts();
+var hasCuts=cuts.length>0;
 ctx.save();
-ctx.textAlign='left';
-var lines=[];
-if(measMode==='distance'){
-var n1=measNodes[0],n2=measNodes[1];
-var p1=cn[n1],p2=cn[n2];
-var dx=p2[0]-p1[0],dy=p2[1]-p1[1],dz=p2[2]-p1[2];
-var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
-lines=['Distance Measurement','Node A: '+n1+'  Node B: '+n2,
-'\u0394X = '+formatLegendDrivenValue(dx,'N/A'),'\u0394Y = '+formatLegendDrivenValue(dy,'N/A'),
-'\u0394Z = '+formatLegendDrivenValue(dz,'N/A'),'Magnitude = '+formatLegendDrivenValue(mag,'N/A')];
-}else if(measMode==='angle'){
-var n1=measNodes[0],n2=measNodes[1],n3=measNodes[2];
-var p1=cn[n1],p2=cn[n2],p3=cn[n3];
-var v1=[p1[0]-p2[0],p1[1]-p2[1],p1[2]-p2[2]];
-var v2=[p3[0]-p2[0],p3[1]-p2[1],p3[2]-p2[2]];
-var dot=v1[0]*v2[0]+v1[1]*v2[1]+v1[2]*v2[2];
-var m1=Math.sqrt(v1[0]*v1[0]+v1[1]*v1[1]+v1[2]*v1[2]);
-var m2=Math.sqrt(v2[0]*v2[0]+v2[1]*v2[1]+v2[2]*v2[2]);
-var cosA=(m1>1e-20&&m2>1e-20)?dot/(m1*m2):0;
-cosA=Math.max(-1,Math.min(1,cosA));
-var angleDeg=Math.acos(cosA)*180/Math.PI;
-lines=['Angle Measurement','Nodes: '+n1+' - '+n2+' - '+n3,
-'Angle at '+n2+' = '+formatLegendDrivenValue(angleDeg,'N/A')+'\u00B0'];
+ctx.textAlign='center';
+ctx.textBaseline='middle';
+ctx.font='700 11px Arial';
+function drawBundle(bundle){
+if(!bundle||!bundle.nodes)return;
+for(var i=0;i<bundle.nodes.length;i++){
+var ni=bundle.nodes[i];
+if(ni<0||ni>=dispNodes.length)continue;
+if(!isNodeVisibleNow(ni))continue;
+if(hasCuts&&!isPointVisibleByCuts(dispNodes[ni],cuts))continue;
+var sp=projectNodeToCanvas(ni,w,h);
+if(!sp)continue;
+var txt=measureLabelFromIndex(bundle.labelStart+i);
+var bg=getMeasureNodeRoleColor(i);
+var boxW=Math.max(18,ctx.measureText(txt).width+12);
+var boxH=18;
+var bx=sp.x+10,by=sp.y-18;
+ctx.fillStyle=bg;
+ctx.strokeStyle='rgba(255,255,255,0.7)';
+ctx.lineWidth=1;
+roundRectPath(ctx,bx,by,boxW,boxH,5);
+ctx.fill();
+ctx.stroke();
+ctx.fillStyle='#fff';
+ctx.fillText(txt,bx+boxW*0.5,by+boxH*0.5+0.5);
 }
-var lineH=14,pad=8;
-var boxH=lines.length*lineH+pad*2;
-ctx.font='11px monospace';
-var maxW=0;lines.forEach(function(l){var mw=ctx.measureText(l).width;if(mw>maxW)maxW=mw;});
-var boxW=maxW+pad*2;
-var bx=Math.round((w-boxW)/2),by=h-boxH-60;
-ctx.fillStyle='rgba(0,0,0,0.85)';ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1;
-roundRectPath(ctx,bx,by,boxW,boxH,6);
-ctx.fillStyle='#ffeb3b';ctx.font='bold 11px monospace';
-ctx.fillText(lines[0],bx+pad,by+pad+11);
-ctx.fillStyle='#ffffff';ctx.font='11px monospace';
-for(var li=1;li<lines.length;li++){
-var isLast=li===lines.length-1;
-ctx.fillStyle=isLast?'#4CAF50':'#ffffff';
-if(isLast)ctx.font='bold 11px monospace';
-ctx.fillText(lines[li],bx+pad,by+pad+11+li*lineH);
 }
+measGroups.forEach(drawBundle);
+if(measDraft)drawBundle(measDraft);
 ctx.restore();
 }
 
@@ -8691,7 +9076,7 @@ return out+ell;
 
 function drawTableFormOnCanvas(ctx,w,h){
 tfLastExportTableLayout=null;
-if(!tableFormVisible||!valueInfoVisible()||!cvEl)return;
+if(!tableFormVisible||!cvEl)return;
 var win=document.getElementById('table-form-window');
 if(!win)return;
 var ws=window.getComputedStyle?window.getComputedStyle(win):null;
@@ -9573,7 +9958,7 @@ document.getElementById('st').textContent='All Edges is disabled in this HTML ex
 edgeMode=mode;
 var drawColors=null;
 if(cst&&AD[cst]){
-if(centroidMode&&centroidRawColors){drawColors=rawColors;}
+if((centroidMode||isElementLocalContourMode())&&centroidRawColors){drawColors=rawColors;}
 else{drawColors=getMeshDrawColors();}
 }
 var needsRebuild=(edgeMode==='all'&&!eg)||(edgeMode==='feature'&&!featureEg);
@@ -9627,7 +10012,7 @@ camQuat.setFromRotationMatrix(m);uc();
 document.getElementById('st').textContent=view.charAt(0).toUpperCase()+view.slice(1)+' view';
 }
 
-function zoomIn(){camDist=Math.max(B*0.5,camDist*0.8);uc();}
+function zoomIn(){camDist=Math.max(B*0.1,camDist*0.8);uc();}
 function zoomOut(){camDist=Math.min(B*80,camDist*1.25);uc();}
 function fillView(){rv();}
 
@@ -9708,7 +10093,7 @@ ctx.strokeStyle='#2196F3';ctx.lineWidth=2;
 roundRectPath(ctx,lX,lY,lW,lH,6);
 // Title
 ctx.fillStyle='#2196F3';ctx.font='bold 11px Arial';ctx.textAlign='center';
-ctx.fillText(currentVar+(centroidMode?' (C)':''),lX+lW/2,lY+16);
+ctx.fillText(currentVar,lX+lW/2,lY+16);
 // Gradient bar
 var gX=lX+lW-gW-pad,gY=lY+28,gH=lH-42;
 if(discreteMode){
@@ -9910,6 +10295,7 @@ function an(){requestAnimationFrame(an);
 if(ir){const qY=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),0.005);camQuat.premultiply(qY);camQuat.normalize();uc();}
 renderFrame();
 updatePinnedPositions();
+updateMeasureLabelPositions();
 updateDialogBoxesVisuals();
 }
 // ==================== XY PLOT ====================
@@ -11842,7 +12228,6 @@ body.innerHTML=html.join('');
 function xyBuildForecastDialogText(result,format,decimals){
 if(!result)return 'Forecast result unavailable';
 var lines=[];
-lines.push('Forecast Result');
 for(var i=0;i<result.entries.length;i++){
 var entry=result.entries[i];
 lines.push('');
@@ -11879,8 +12264,8 @@ return '<div class="dlg-rich-sec" style="--dlg-accent:'+bg+'"><div class="dlg-ri
 }
 
 function xyBuildForecastDialogHtml(result,format,decimals){
-if(!result)return '<div class="dlg-rich-head">Forecast Result</div>';
-var html=['<div class="dlg-rich-head">Forecast Result</div>'];
+if(!result)return '';
+var html=[];
 for(var i=0;i<result.entries.length;i++){
 var entry=result.entries[i];
 var mainRows=[];
@@ -13133,7 +13518,7 @@ height=Math.max(zInfo.range*1.18,diag*0.18);
 }else if(axis==='y'){
 point.y=cutPos;
 uDir.set(1,0,0);
-vDir.set(0,0,1);
+vDir.set(0,0,-1);
 normal.set(0,1,0);
 width=Math.max(xInfo.range*1.18,diag*0.18);
 height=Math.max(zInfo.range*1.18,diag*0.18);
@@ -13547,25 +13932,363 @@ rebuildCutMesh();
 }
 
 // --- Measure Tool ---
+function getMeasureNeeded(mode){
+return mode==='angle'?3:(mode==='distance'?2:0);
+}
+function getMeasureModeLabel(mode){
+if(mode==='distance')return 'Distance';
+if(mode==='angle')return 'Angle';
+return 'Measure';
+}
+function getMeasureNodeRoleColor(order){
+var colors=[0x2196F3,0x4CAF50,0xFF9800];
+order=parseInt(order,10);
+if(!isFinite(order))order=0;
+order=Math.max(0,Math.min(colors.length-1,order));
+return colors[order];
+}
+function getMeasureNodeRoleColorHex(order){
+var colors=['#2196F3','#4CAF50','#FF9800'];
+order=parseInt(order,10);
+if(!isFinite(order))order=0;
+order=Math.max(0,Math.min(colors.length-1,order));
+return colors[order];
+}
+function measureLabelFromIndex(idx){
+idx=parseInt(idx,10);
+if(!isFinite(idx)||idx<0)idx=0;
+var out='';
+do{
+out=String.fromCharCode(65+(idx%26))+out;
+idx=Math.floor(idx/26)-1;
+}while(idx>=0);
+return out;
+}
+function getMeasureNodeDisplayId(nodeIdx){
+if(NIDS&&NIDS[nodeIdx]!==undefined&&NIDS[nodeIdx]!==null)return String(NIDS[nodeIdx]);
+return String(nodeIdx);
+}
+function isMeasureGroupBox(box){
+return !!(box&&box.measureGroupId!==undefined&&box.measureGroupId!==null);
+}
+function hasAnyMeasurements(){
+return measGroups.length>0||!!(measDraft&&measDraft.nodes&&measDraft.nodes.length>0);
+}
+function getMeasureLabelContainer(){
+return document.getElementById('measure-label-container');
+}
+function createMeasureNodeLabel(text,color){
+var container=getMeasureLabelContainer();
+if(!container)return null;
+var el=document.createElement('div');
+el.className='measure-node-label';
+el.textContent=text||'';
+el.style.background=color||'#2196F3';
+container.appendChild(el);
+return el;
+}
+function ensureMeasureLabelElements(bundle){
+if(!bundle)return;
+if(!bundle.labelEls)bundle.labelEls=[];
+while(bundle.labelEls.length<bundle.nodes.length){
+var idx=bundle.labelEls.length;
+bundle.labelEls.push(createMeasureNodeLabel(measureLabelFromIndex(bundle.labelStart+idx),getMeasureNodeRoleColorHex(idx)));
+}
+while(bundle.labelEls.length>bundle.nodes.length){
+var dead=bundle.labelEls.pop();
+if(dead&&dead.parentNode)dead.parentNode.removeChild(dead);
+}
+for(var i=0;i<bundle.labelEls.length;i++){
+var el=bundle.labelEls[i];
+if(!el)continue;
+el.textContent=measureLabelFromIndex(bundle.labelStart+i);
+el.style.background=getMeasureNodeRoleColorHex(i);
+}
+}
+function createMeasureDraft(){
+return{id:'draft',mode:measMode,nodes:[],markers:[],line:null,labelStart:measLabelCounter,dialogBoxId:null,labelEls:[]};
+}
+function removeMeasureBundleVisuals(bundle){
+if(!bundle)return;
+if(bundle.markers){
+bundle.markers.forEach(function(m){
+if(!m)return;
+sc.remove(m);
+try{if(m.geometry&&m.geometry.dispose)m.geometry.dispose();}catch(e){}
+try{if(m.material&&m.material.dispose)m.material.dispose();}catch(e){}
+});
+}
+bundle.markers=[];
+if(bundle.line){
+sc.remove(bundle.line);
+try{if(bundle.line.geometry&&bundle.line.geometry.dispose)bundle.line.geometry.dispose();}catch(e){}
+try{if(bundle.line.material&&bundle.line.material.dispose)bundle.line.material.dispose();}catch(e){}
+bundle.line=null;
+}
+if(bundle.labelEls){
+bundle.labelEls.forEach(function(el){if(el&&el.parentNode)el.parentNode.removeChild(el);});
+bundle.labelEls=[];
+}
+}
+function clearMeasureDraft(){
+if(!measDraft)return;
+removeMeasureBundleVisuals(measDraft);
+measDraft=null;
+}
+function findDistanceMeasureGroup(a,b){
+for(var i=0;i<measGroups.length;i++){
+var g=measGroups[i];
+if(!g||g.mode!=='distance'||!g.nodes||g.nodes.length<2)continue;
+if((g.nodes[0]===a&&g.nodes[1]===b)||(g.nodes[0]===b&&g.nodes[1]===a))return g;
+}
+return null;
+}
+function buildMeasureLineVertices(mode,nodes){
+var verts=[];
+if(!nodes||nodes.length<2)return verts;
+if(mode==='distance'){
+verts.push(cn[nodes[0]][0],cn[nodes[0]][1],cn[nodes[0]][2],cn[nodes[1]][0],cn[nodes[1]][1],cn[nodes[1]][2]);
+}else if(mode==='angle'){
+verts.push(cn[nodes[0]][0],cn[nodes[0]][1],cn[nodes[0]][2],cn[nodes[1]][0],cn[nodes[1]][1],cn[nodes[1]][2]);
+if(nodes.length>=3){
+verts.push(cn[nodes[1]][0],cn[nodes[1]][1],cn[nodes[1]][2],cn[nodes[2]][0],cn[nodes[2]][1],cn[nodes[2]][2]);
+}
+}
+return verts;
+}
+function createMeasureLine(verts){
+var lineGeo=new THREE.BufferGeometry();
+lineGeo.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+var line=new THREE.LineSegments(lineGeo,new THREE.LineBasicMaterial({color:0xffff00,linewidth:2,depthTest:false}));
+line.renderOrder=997;
+sc.add(line);
+return line;
+}
+function syncMeasureBundleVisuals(bundle){
+if(!bundle||!bundle.nodes)return;
+if(!bundle.markers)bundle.markers=[];
+ensureMeasureLabelElements(bundle);
+while(bundle.markers.length<bundle.nodes.length){
+var mi=bundle.markers.length;
+bundle.markers.push(createMeasMarker(cn[bundle.nodes[mi]],getMeasureNodeRoleColor(mi)));
+}
+while(bundle.markers.length>bundle.nodes.length){
+var mk=bundle.markers.pop();
+if(!mk)continue;
+sc.remove(mk);
+try{if(mk.geometry&&mk.geometry.dispose)mk.geometry.dispose();}catch(e){}
+try{if(mk.material&&mk.material.dispose)mk.material.dispose();}catch(e){}
+}
+for(var i=0;i<bundle.nodes.length;i++){
+var ni=bundle.nodes[i];
+if(i>=bundle.markers.length)continue;
+bundle.markers[i].position.set(cn[ni][0],cn[ni][1],cn[ni][2]);
+bundle.markers[i].material.color.setHex(getMeasureNodeRoleColor(i));
+bundle.markers[i].visible=isNodeVisibleNow(ni);
+}
+if(bundle.line){
+sc.remove(bundle.line);
+try{if(bundle.line.geometry&&bundle.line.geometry.dispose)bundle.line.geometry.dispose();}catch(e){}
+try{if(bundle.line.material&&bundle.line.material.dispose)bundle.line.material.dispose();}catch(e){}
+bundle.line=null;
+}
+var verts=buildMeasureLineVertices(bundle.mode,bundle.nodes);
+if(verts.length>=6)bundle.line=createMeasureLine(verts);
+}
+function buildMeasureResult(bundle){
+if(!bundle||!bundle.nodes)return null;
+if(bundle.mode==='distance'){
+if(bundle.nodes.length<2)return null;
+var n1=bundle.nodes[0],n2=bundle.nodes[1];
+var p1=cn[n1],p2=cn[n2];
+var dx=p2[0]-p1[0],dy=p2[1]-p1[1],dz=p2[2]-p1[2];
+var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
+var la=measureLabelFromIndex(bundle.labelStart),lb=measureLabelFromIndex(bundle.labelStart+1);
+return{
+plainLines:[
+'Distance Measurement',
+'Node '+la+': N'+getMeasureNodeDisplayId(n1)+'  Node '+lb+': N'+getMeasureNodeDisplayId(n2),
+'\\u0394X = '+formatLegendDrivenValue(dx,'N/A'),
+'\\u0394Y = '+formatLegendDrivenValue(dy,'N/A'),
+'\\u0394Z = '+formatLegendDrivenValue(dz,'N/A'),
+'Magnitude = '+formatLegendDrivenValue(mag,'N/A')
+],
+html:
+'<div style="font-weight:700;color:#0D47A1;margin-bottom:4px">Distance Measurement</div>'+
+'<div><span style="color:'+getMeasureNodeRoleColorHex(0)+';font-weight:700">'+la+'</span>: N'+getMeasureNodeDisplayId(n1)+' &nbsp; <span style="color:'+getMeasureNodeRoleColorHex(1)+';font-weight:700">'+lb+'</span>: N'+getMeasureNodeDisplayId(n2)+'</div>'+
+'<div>\\u0394X = '+formatLegendDrivenValue(dx,'N/A')+'</div>'+
+'<div>\\u0394Y = '+formatLegendDrivenValue(dy,'N/A')+'</div>'+
+'<div>\\u0394Z = '+formatLegendDrivenValue(dz,'N/A')+'</div>'+
+'<div style="margin-top:4px;font-weight:700;color:#2E7D32">Magnitude = '+formatLegendDrivenValue(mag,'N/A')+'</div>'
+};
+}
+if(bundle.mode==='angle'){
+if(bundle.nodes.length<3)return null;
+var a=bundle.nodes[0],b=bundle.nodes[1],c=bundle.nodes[2];
+var pa=cn[a],pb=cn[b],pc=cn[c];
+var v1=[pa[0]-pb[0],pa[1]-pb[1],pa[2]-pb[2]];
+var v2=[pc[0]-pb[0],pc[1]-pb[1],pc[2]-pb[2]];
+var dot=v1[0]*v2[0]+v1[1]*v2[1]+v1[2]*v2[2];
+var m1=Math.sqrt(v1[0]*v1[0]+v1[1]*v1[1]+v1[2]*v1[2]);
+var m2=Math.sqrt(v2[0]*v2[0]+v2[1]*v2[1]+v2[2]*v2[2]);
+var cosA=(m1>1e-20&&m2>1e-20)?dot/(m1*m2):0;
+cosA=Math.max(-1,Math.min(1,cosA));
+var angleRad=Math.acos(cosA);
+var angleDeg=angleRad*180/Math.PI;
+var l0=measureLabelFromIndex(bundle.labelStart),l1=measureLabelFromIndex(bundle.labelStart+1),l2=measureLabelFromIndex(bundle.labelStart+2);
+return{
+plainLines:[
+'Angle Measurement',
+'Node '+l0+': N'+getMeasureNodeDisplayId(a)+'  Node '+l1+' (vertex): N'+getMeasureNodeDisplayId(b)+'  Node '+l2+': N'+getMeasureNodeDisplayId(c),
+'Angle at '+l1+' = '+formatLegendDrivenValue(angleDeg,'N/A')+'\\u00B0',
+'('+formatLegendDrivenValue(angleRad,'N/A')+' rad)'
+],
+html:
+'<div style="font-weight:700;color:#0D47A1;margin-bottom:4px">Angle Measurement</div>'+
+'<div><span style="color:'+getMeasureNodeRoleColorHex(0)+';font-weight:700">'+l0+'</span>: N'+getMeasureNodeDisplayId(a)+' &nbsp; <span style="color:'+getMeasureNodeRoleColorHex(1)+';font-weight:700">'+l1+'</span> (vertex): N'+getMeasureNodeDisplayId(b)+' &nbsp; <span style="color:'+getMeasureNodeRoleColorHex(2)+';font-weight:700">'+l2+'</span>: N'+getMeasureNodeDisplayId(c)+'</div>'+
+'<div style="margin-top:4px;font-weight:700;color:#2E7D32">Angle at '+l1+' = '+formatLegendDrivenValue(angleDeg,'N/A')+'\\u00B0</div>'+
+'<div>('+formatLegendDrivenValue(angleRad,'N/A')+' rad)</div>'
+};
+}
+return null;
+}
+function getMeasureAnchorClient(bundle){
+if(!cvEl||!ca||!bundle||!bundle.nodes||bundle.nodes.length===0)return null;
+var rect=cvEl.getBoundingClientRect();
+var wx=0,wy=0,wz=0;
+if(bundle.mode==='distance'&&bundle.nodes.length>=2){
+var p0=cn[bundle.nodes[0]],p1=cn[bundle.nodes[1]];
+wx=(p0[0]+p1[0])*0.5;wy=(p0[1]+p1[1])*0.5;wz=(p0[2]+p1[2])*0.5;
+}else if(bundle.mode==='angle'&&bundle.nodes.length>=2){
+wx=cn[bundle.nodes[1]][0];wy=cn[bundle.nodes[1]][1];wz=cn[bundle.nodes[1]][2];
+}else{
+var p=cn[bundle.nodes[bundle.nodes.length-1]];
+wx=p[0];wy=p[1];wz=p[2];
+}
+var pos3=new THREE.Vector3(wx,wy,wz);
+pos3.project(ca);
+if(pos3.z>1)return{x:rect.left+rect.width*0.5,y:rect.top+rect.height*0.5};
+return{x:(pos3.x*0.5+0.5)*rect.width+rect.left,y:(-pos3.y*0.5+0.5)*rect.height+rect.top};
+}
+function applyMeasureDialogBoxContent(bundle){
+if(!bundle||bundle.dialogBoxId===null||bundle.dialogBoxId===undefined)return;
+var box=getDialogById(bundle.dialogBoxId);
+var result=buildMeasureResult(bundle);
+if(!box||!result)return;
+box.measureGroupId=bundle.id;
+box.readOnly=true;
+box.allowRichEdit=false;
+box.nodeIdx=-1;
+box.body.contentEditable='false';
+box.body.classList.add('dialog-body-rich');
+box.body.style.lineHeight='1.35';
+box.body.innerHTML=result.html;
+box.text=result.plainLines.join('\\n');
+box.richHtml=box.body.innerHTML;
+if(box.fontBtn)box.fontBtn.style.display='none';
+if(box.editBtn)box.editBtn.style.display='none';
+if(box.linkBtn)box.linkBtn.style.display='none';
+if(box.copyBtn)box.copyBtn.style.display='none';
+refreshDialogConnectButton(box);
+refreshDialogCopyButton(box);
+refreshDialogEditButton(box);
+syncDialogTextSnapshot(box);
+syncDialogBoxSize(box);
+}
+function createMeasureDialogBoxForBundle(bundle){
+if(!bundle)return null;
+var anchor=getMeasureAnchorClient(bundle);
+var rect=cvEl?cvEl.getBoundingClientRect():null;
+var clientX=anchor?anchor.x:(rect?(rect.left+rect.width*0.5):window.innerWidth*0.5);
+var clientY=anchor?anchor.y:(rect?(rect.top+rect.height*0.5):window.innerHeight*0.5);
+var box=createDialogBoxAtClient(clientX,clientY);
+if(!box)return null;
+bundle.dialogBoxId=box.id;
+box.measureGroupId=bundle.id;
+box.readOnly=true;
+box.allowRichEdit=false;
+box.nodeIdx=-1;
+box.fontSizePx=Math.max(10,dialogFontSize);
+box.body.contentEditable='false';
+box.body.classList.add('dialog-body-rich');
+if(box.fontBtn)box.fontBtn.style.display='none';
+if(box.editBtn)box.editBtn.style.display='none';
+if(box.linkBtn)box.linkBtn.style.display='none';
+if(box.copyBtn)box.copyBtn.style.display='none';
+refreshDialogConnectButton(box);
+refreshDialogCopyButton(box);
+refreshDialogEditButton(box);
+return box;
+}
+function removeMeasureGroupById(id){
+for(var i=0;i<measGroups.length;i++){
+var g=measGroups[i];
+if(!g||g.id!==id)continue;
+removeMeasureBundleVisuals(g);
+if(g.dialogBoxId!==null&&g.dialogBoxId!==undefined){
+measDialogRemovalId=g.dialogBoxId;
+removeDialogBoxById(g.dialogBoxId);
+measDialogRemovalId=null;
+}
+measGroups.splice(i,1);
+updateMeasureLabelPositions();
+if(!hasAnyMeasurements()){
+var overlay=document.getElementById('meas-overlay');
+if(overlay)overlay.style.display='none';
+}
+document.getElementById('st').textContent='Measurement removed';
+return;
+}
+}
+function armMeasAdd(){
+if(measMode==='off'){
+document.getElementById('st').textContent='Measure: choose Distance or Angle first';
+return;
+}
+if(measDraft&&measDraft.nodes&&measDraft.nodes.length>0&&measDraft.nodes.length<getMeasureNeeded(measDraft.mode)){
+document.getElementById('st').textContent='Finish the current '+getMeasureModeLabel(measDraft.mode).toLowerCase()+' measurement first';
+return;
+}
+clearMeasureDraft();
+measDraft=createMeasureDraft();
+document.getElementById('st').textContent='Measure '+getMeasureModeLabel(measMode)+': click '+getMeasureNeeded(measMode)+' node'+(getMeasureNeeded(measMode)>1?'s':'')+' on the mesh';
+updateMeasurement();
+}
 function setMeasMode(mode){
 measMode=mode;
-clearMeas();
 if(measHighlightSphere)measHighlightSphere.visible=false;
+clearMeasureDraft();
+var overlay=document.getElementById('meas-overlay');
+if(overlay)overlay.style.display='none';
 if(mode==='off'){
 document.getElementById('st').textContent='Measure: off';
-}else if(mode==='distance'){
-document.getElementById('st').textContent='Measure Distance: click 2 nodes on the mesh';
-}else if(mode==='angle'){
-document.getElementById('st').textContent='Measure Angle: click 3 nodes (angle at 2nd node)';
+updateMeasureLabelPositions();
+return;
 }
+if(measGroups.length===0){
+measDraft=createMeasureDraft();
+document.getElementById('st').textContent='Measure '+getMeasureModeLabel(mode)+': click '+getMeasureNeeded(mode)+' node'+(getMeasureNeeded(mode)>1?'s':'')+' on the mesh';
+}else{
+document.getElementById('st').textContent='Measure '+getMeasureModeLabel(mode)+': click + to start a new measurement';
+}
+updateMeasurement();
 }
 function clearMeas(){
-measNodes=[];
-measMarkers.forEach(function(m){sc.remove(m);});
-measMarkers=[];
-if(measLine){sc.remove(measLine);measLine=null;}
-if(measAngleLine){sc.remove(measAngleLine);measAngleLine=null;}
-document.getElementById('meas-overlay').style.display='none';
+clearMeasureDraft();
+var ids=measGroups.map(function(g){return g.id;});
+ids.forEach(function(id){removeMeasureGroupById(id);});
+measGroups=[];
+measLabelCounter=0;
+var overlay=document.getElementById('meas-overlay');
+if(overlay)overlay.style.display='none';
+updateMeasureLabelPositions();
+if(measMode!=='off'){
+measDraft=createMeasureDraft();
+document.getElementById('st').textContent='Measure '+getMeasureModeLabel(measMode)+': click '+getMeasureNeeded(measMode)+' node'+(getMeasureNeeded(measMode)>1?'s':'')+' on the mesh';
+}else{
+document.getElementById('st').textContent='Measurements cleared';
+}
+updateMeasurement();
 }
 function createMeasMarker(pos,color){
 var sz=B*0.003;
@@ -13577,91 +14300,116 @@ m.renderOrder=998;
 sc.add(m);
 return m;
 }
-function updateMeasVisuals(){
-// Remove old lines
-if(measLine){sc.remove(measLine);measLine=null;}
-if(measAngleLine){sc.remove(measAngleLine);measAngleLine=null;}
-if(measNodes.length<2)return;
-var pts=measNodes.map(function(n){return new THREE.Vector3(cn[n][0],cn[n][1],cn[n][2]);});
-// Update marker positions to current deformed coordinates
-for(var mi=0;mi<measMarkers.length;mi++){
-if(mi<measNodes.length){
-var ni=measNodes[mi];
-measMarkers[mi].position.set(cn[ni][0],cn[ni][1],cn[ni][2]);
+function updateMeasureLabelPositions(){
+var bundles=measGroups.slice();
+if(measDraft)bundles.push(measDraft);
+if(bundles.length===0)return;
+var container=getMeasureLabelContainer();
+if(!container||!cvEl)return;
+var rect=cvEl.getBoundingClientRect();
+var dispNodes=getDisplayNodes();
+var cuts=getActiveCuts();
+var hasCuts=cuts.length>0;
+bundles.forEach(function(bundle){
+if(!bundle||!bundle.nodes)return;
+ensureMeasureLabelElements(bundle);
+for(var i=0;i<bundle.labelEls.length;i++){
+var el=bundle.labelEls[i];
+var ni=bundle.nodes[i];
+if(!el||ni===undefined||ni===null||ni<0||ni>=dispNodes.length||!isNodeVisibleNow(ni)||(hasCuts&&!isPointVisibleByCuts(dispNodes[ni],cuts))){
+if(el)el.style.display='none';
+continue;
 }
+var pos3=new THREE.Vector3(dispNodes[ni][0],dispNodes[ni][1],dispNodes[ni][2]);
+pos3.project(ca);
+if(pos3.z>1){
+el.style.display='none';
+continue;
 }
-// Draw lines between selected nodes
-var lineGeo=new THREE.BufferGeometry();
-var lineVerts=[];
-if(measMode==='distance'&&pts.length>=2){
-lineVerts.push(pts[0].x,pts[0].y,pts[0].z,pts[1].x,pts[1].y,pts[1].z);
-}else if(measMode==='angle'&&pts.length>=3){
-lineVerts.push(pts[0].x,pts[0].y,pts[0].z,pts[1].x,pts[1].y,pts[1].z);
-lineVerts.push(pts[1].x,pts[1].y,pts[1].z,pts[2].x,pts[2].y,pts[2].z);
+var sx=(pos3.x*0.5+0.5)*rect.width+rect.left;
+var sy=(-pos3.y*0.5+0.5)*rect.height+rect.top;
+el.style.display='block';
+el.style.left=(sx+10)+'px';
+el.style.top=(sy-18)+'px';
 }
-if(lineVerts.length>0){
-lineGeo.setAttribute('position',new THREE.Float32BufferAttribute(lineVerts,3));
-measLine=new THREE.LineSegments(lineGeo,new THREE.LineBasicMaterial({color:0xffff00,linewidth:2,depthTest:false}));
-measLine.renderOrder=997;
-sc.add(measLine);
+});
 }
-}
-// Recalculate and display measurement values (called when increment changes)
 function updateMeasurement(){
-if(measNodes.length<2)return;
-var needed=measMode==='distance'?2:3;
-if(measNodes.length<needed)return;
-updateMeasVisuals();
-var overlay=document.getElementById('meas-overlay');
-if(measMode==='distance'){
-var n1=measNodes[0],n2=measNodes[1];
-var p1=cn[n1],p2=cn[n2];
-var dx=p2[0]-p1[0],dy=p2[1]-p1[1],dz=p2[2]-p1[2];
-var mag=Math.sqrt(dx*dx+dy*dy+dz*dz);
-overlay.innerHTML='<b style="color:#ffeb3b">Distance Measurement</b>\\n'+
-'Node A: '+n1+'  Node B: '+n2+'\\n'+
-'\\u0394X = '+formatLegendDrivenValue(dx,'N/A')+'\\n'+
-'\\u0394Y = '+formatLegendDrivenValue(dy,'N/A')+'\\n'+
-'\\u0394Z = '+formatLegendDrivenValue(dz,'N/A')+'\\n'+
-'<b style="color:#4CAF50">Magnitude = '+formatLegendDrivenValue(mag,'N/A')+'</b>';
-overlay.style.display='block';
-}else if(measMode==='angle'){
-var n1=measNodes[0],n2=measNodes[1],n3=measNodes[2];
-var p1=cn[n1],p2=cn[n2],p3=cn[n3];
-var v1=[p1[0]-p2[0],p1[1]-p2[1],p1[2]-p2[2]];
-var v2=[p3[0]-p2[0],p3[1]-p2[1],p3[2]-p2[2]];
-var dot=v1[0]*v2[0]+v1[1]*v2[1]+v1[2]*v2[2];
-var m1=Math.sqrt(v1[0]*v1[0]+v1[1]*v1[1]+v1[2]*v1[2]);
-var m2=Math.sqrt(v2[0]*v2[0]+v2[1]*v2[1]+v2[2]*v2[2]);
-var cosA=(m1>1e-20&&m2>1e-20)?dot/(m1*m2):0;
-cosA=Math.max(-1,Math.min(1,cosA));
-var angleRad=Math.acos(cosA);
-var angleDeg=angleRad*180/Math.PI;
-overlay.innerHTML='<b style="color:#ffeb3b">Angle Measurement</b>\\n'+
-'Node A: '+n1+'  Node B (vertex): '+n2+'  Node C: '+n3+'\\n'+
-'<b style="color:#4CAF50">Angle at B = '+formatLegendDrivenValue(angleDeg,'N/A')+'\\u00B0</b>\\n'+
-'('+formatLegendDrivenValue(angleRad,'N/A')+' rad)';
-overlay.style.display='block';
+if(measDraft)syncMeasureBundleVisuals(measDraft);
+for(var i=0;i<measGroups.length;i++){
+var g=measGroups[i];
+syncMeasureBundleVisuals(g);
+if(g.dialogBoxId===null||g.dialogBoxId===undefined||!getDialogById(g.dialogBoxId))createMeasureDialogBoxForBundle(g);
+applyMeasureDialogBoxContent(g);
 }
+updateMeasureLabelPositions();
+updateDialogBoxesVisuals();
+}
+function finalizeMeasureDraft(){
+if(!measDraft)return null;
+var needed=getMeasureNeeded(measDraft.mode);
+if(measDraft.nodes.length<needed)return null;
+var g={
+id:measureIdSeed++,
+mode:measDraft.mode,
+nodes:measDraft.nodes.slice(),
+markers:measDraft.markers||[],
+line:measDraft.line||null,
+labelStart:measDraft.labelStart,
+dialogBoxId:null,
+labelEls:measDraft.labelEls||[]
+};
+measDraft=null;
+measGroups.push(g);
+measLabelCounter=g.labelStart+g.nodes.length;
+createMeasureDialogBoxForBundle(g);
+applyMeasureDialogBoxContent(g);
+return g;
 }
 function onMeasClick(nodeIdx){
-var maxN=measMode==='distance'?2:3;
-if(measNodes.length>=maxN){
-// Reset and start new measurement
-clearMeas();
-}
-measNodes.push(nodeIdx);
-var colors=[0x2196F3,0x4CAF50,0xFF9800];
-var marker=createMeasMarker(cn[nodeIdx],colors[measNodes.length-1]);
-measMarkers.push(marker);
-var needed=measMode==='distance'?2:3;
-if(measNodes.length<needed){
-var remaining=needed-measNodes.length;
-document.getElementById('st').textContent='N'+(NIDS[nodeIdx]||nodeIdx)+' selected. Click '+remaining+' more node'+(remaining>1?'s':'')+'.';
-updateMeasVisuals();
+if(measMode==='off')return;
+if(!measDraft){
+if(measGroups.length>0){
+document.getElementById('st').textContent='Measure '+getMeasureModeLabel(measMode)+': click + to start a new measurement';
 return;
 }
+measDraft=createMeasureDraft();
+}
+if(measDraft.mode!==measMode){
+clearMeasureDraft();
+measDraft=createMeasureDraft();
+}
+if(measDraft.nodes.indexOf(nodeIdx)>=0){
+measDraft.nodes=measDraft.nodes.filter(function(v){return v!==nodeIdx;});
+syncMeasureBundleVisuals(measDraft);
 updateMeasurement();
+document.getElementById('st').textContent='N'+getMeasureNodeDisplayId(nodeIdx)+' removed from current measurement';
+return;
+}
+measDraft.nodes.push(nodeIdx);
+syncMeasureBundleVisuals(measDraft);
+if(measDraft.mode==='distance'&&measDraft.nodes.length===2){
+var existing=findDistanceMeasureGroup(measDraft.nodes[0],measDraft.nodes[1]);
+if(existing){
+clearMeasureDraft();
+removeMeasureGroupById(existing.id);
+document.getElementById('st').textContent='Distance '+measureLabelFromIndex(existing.labelStart)+'-'+measureLabelFromIndex(existing.labelStart+1)+' cleared';
+updateMeasurement();
+return;
+}
+}
+var needed=getMeasureNeeded(measDraft.mode);
+if(measDraft.nodes.length<needed){
+var remaining=needed-measDraft.nodes.length;
+document.getElementById('st').textContent='N'+getMeasureNodeDisplayId(nodeIdx)+' selected. Click '+remaining+' more node'+(remaining>1?'s':'')+'.';
+updateMeasurement();
+return;
+}
+var done=finalizeMeasureDraft();
+updateMeasurement();
+if(done){
+document.getElementById('st').textContent=getMeasureModeLabel(done.mode)+' measurement '+measureLabelFromIndex(done.labelStart)+(done.mode==='distance'?'-'+measureLabelFromIndex(done.labelStart+1):'-'+measureLabelFromIndex(done.labelStart+1)+'-'+measureLabelFromIndex(done.labelStart+2))+' created';
+}
 }
 
 // ==================== SAVE / LOAD CONFIGURATION ====================
@@ -13707,7 +14455,6 @@ cfg.showAxes=document.getElementById('ax').checked;
 cfg.mouseInfo=document.getElementById('mi').checked;
 cfg.showValues=document.getElementById('sv').checked;
 cfg.valueInfoFontSize=document.getElementById('value-font-size').value;
-cfg.centroidMode=document.getElementById('centroid-mode').checked;
 cfg.xyPlot=xyPlotVisible;
 cfg.noContour=document.getElementById('nc').checked;
 cfg.noContourGroupColors=cfgClone(noContourGroupColors);
@@ -13726,6 +14473,9 @@ cfg.legFormat=document.getElementById('leg-format').value;
 cfg.legFloatDecimals=document.getElementById('leg-fdec')?document.getElementById('leg-fdec').value:String(legendFloatDecimals);
 cfg.legendCustomValues=cfgClone(legendCustomValues);
 cfg.legendCustomColors=cfgClone(legendCustomColors);
+cfg.extrapolationMethod=normalizeExtrapolationMethod(extrapolationMethod);
+cfg.extrapolationNodalAveraging=normalizeNodalAveragingMode(extrapolationNodalAveraging);
+cfg.extrapolationStandardPresetName=extrapolationStandardPresetName;
 cfg.scale=cs;
 cfg.currentVar=currentVar;
 cfg.displacementComponent=normalizeDisplacementComponent(displacementComponent);
@@ -13786,8 +14536,9 @@ cfg.pinnedElems=pinnedElems.slice();
 cfg.dialogMode=dialogMode;
 cfg.dialogFontSize=dialogFontSize;
 cfg.tableFormFontSize=tableFormFontSize;
+cfg.sidebarPanelOrder=getSidebarPanelOrder();
 var seenDialogIds={};
-cfg.dialogBoxes=dialogBoxes.map(function(b){
+cfg.dialogBoxes=dialogBoxes.filter(function(b){return !isMeasureGroupBox(b);}).map(function(b){
 return{
 id:b.id,
 x:b.x,
@@ -14141,13 +14892,6 @@ if(cfg.showAxes!==undefined){document.getElementById('ax').checked=cfg.showAxes;
 if(cfg.mouseInfo!==undefined){document.getElementById('mi').checked=cfg.mouseInfo;tgmi(cfg.mouseInfo);}
 if(cfg.showValues!==undefined){document.getElementById('sv').checked=cfg.showValues;tgv(cfg.showValues);}
 if(cfg.valueInfoFontSize!==undefined){var vf=document.getElementById('value-font-size');if(vf)vf.value=cfg.valueInfoFontSize;setValueInfoFontSize(cfg.valueInfoFontSize);}
-if(cfg.centroidMode!==undefined&&CENTROID_EXPORTED){
-document.getElementById('centroid-mode').checked=cfg.centroidMode;
-tgCentroid(cfg.centroidMode);
-}else if(!CENTROID_EXPORTED){
-document.getElementById('centroid-mode').checked=false;
-tgCentroid(false);
-}
 if(cfg.noContourGroupColors&&Array.isArray(cfg.noContourGroupColors)){
 noContourGroupColors=cfg.noContourGroupColors.map(function(v,i){
 var h=ncNormHex(v);
@@ -14173,6 +14917,11 @@ if(cfg.legFontSize){document.getElementById('leg-font-size').value=cfg.legFontSi
 if(cfg.legLevels){document.getElementById('leg-levels').value=cfg.legLevels;setLegLevels(cfg.legLevels);}
 if(cfg.legFormat){document.getElementById('leg-format').value=cfg.legFormat;setLegFormat(cfg.legFormat);}
 if(cfg.legFloatDecimals!==undefined){if(document.getElementById('leg-fdec'))document.getElementById('leg-fdec').value=cfg.legFloatDecimals;setLegFloatDecimals(cfg.legFloatDecimals);}
+applyExtrapolationSettings(
+cfg.extrapolationMethod!==undefined?cfg.extrapolationMethod:extrapolationMethod,
+cfg.extrapolationNodalAveraging!==undefined?cfg.extrapolationNodalAveraging:extrapolationNodalAveraging,
+{silent:true,keepDialog:true,standardPresetName:(cfg.extrapolationStandardPresetName!==undefined?cfg.extrapolationStandardPresetName:extrapolationStandardPresetName)}
+);
 if(cfg.legMin)document.getElementById('leg-min').value=cfg.legMin;
 if(cfg.legMax)document.getElementById('leg-max').value=cfg.legMax;
 if(cfg.legMin&&cfg.legMax){applyLegRange();}
@@ -14304,6 +15053,9 @@ setDialogFontSize(cfg.dialogFontSize);
 if(cfg.tableFormFontSize!==undefined){
 setTableFormFont(cfg.tableFormFontSize);
 }
+if(cfg.sidebarPanelOrder&&Array.isArray(cfg.sidebarPanelOrder)){
+applySidebarPanelOrder(cfg.sidebarPanelOrder,true);
+}
 if(cfg.dialogBoxes!==undefined&&Array.isArray(cfg.dialogBoxes)){
 restoreDialogBoxesFromConfig(cfg.dialogBoxes);
 }
@@ -14382,7 +15134,7 @@ try{pss();ugrl();xyRenderSheetTabs();}catch(_){}
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("VMAP 3D Viewer v1.0.1")
+        self.root.title("VMAP 3D Viewer v1.0.4")
         self.root.geometry("820x740")
         self.root.resizable(True, True)
         
@@ -14395,7 +15147,6 @@ class App:
         self.available_outputs = []
         self.selected_output = None
         self.viewer_mode = tk.StringVar(value="static")
-        self.export_centroid_var = tk.BooleanVar(value=False)
         self.export_all_edges_var = tk.BooleanVar(value=False)
         self.output_summary_text = "Select VMAP file first"
         self._default_window_height = 740
@@ -14505,7 +15256,7 @@ class App:
         # Title labels - centered
         tk.Label(tf, text="Vibracoustic", font=('Arial', 18, 'bold'), fg='white', bg='#d4542a', pady=3).pack()
         tk.Label(tf, text="VMAP 3D Viewer", font=('Arial', 12), fg='white', bg='#d4542a', pady=1).pack()
-        tk.Label(tf, text="European FEA Department - v1.0.1", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
+        tk.Label(tf, text="European FEA Department - v1.0.4", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
         
         # Guideline button - floating in top-right corner of title frame
         guideline_btn = tk.Button(tf, text="Guideline", command=self.open_guideline,
@@ -14589,14 +15340,6 @@ class App:
 
         options_row = tk.Frame(step2)
         options_row.pack(anchor='w', pady=(4, 0))
-        self.export_centroid_cb = tk.Checkbutton(
-            options_row,
-            text="Export Centroid data (Recommend for Rubber)",
-            variable=self.export_centroid_var,
-            font=('Arial', 9),
-            state='disabled'
-        )
-        self.export_centroid_cb.pack(side='left')
         self.export_all_edges_cb = tk.Checkbutton(
             options_row,
             text="Enable All Edges option in HTML (Increase file size)",
@@ -14604,7 +15347,7 @@ class App:
             font=('Arial', 9),
             state='disabled'
         )
-        self.export_all_edges_cb.pack(side='left', padx=(14, 0))
+        self.export_all_edges_cb.pack(side='left')
 
         # STEP 3: Output Selection - LabelFrame
         step3 = tk.LabelFrame(mf, text="Step 3: Select Output Variable",
@@ -14726,8 +15469,6 @@ class App:
         self.set_mode_controls_enabled(has_reader)
 
         if not has_reader:
-            if hasattr(self, 'export_centroid_cb') and self.export_centroid_cb:
-                self.export_centroid_cb.config(state='disabled')
             if hasattr(self, 'export_all_edges_cb') and self.export_all_edges_cb:
                 self.export_all_edges_cb.config(state='disabled')
             self.export_all_edges_var.set(False)
@@ -14739,9 +15480,6 @@ class App:
             return
         
         if mode == "harmonic":
-            self.export_centroid_var.set(False)
-            if hasattr(self, 'export_centroid_cb') and self.export_centroid_cb:
-                self.export_centroid_cb.config(state='disabled')
             if hasattr(self, 'export_all_edges_cb') and self.export_all_edges_cb:
                 self.export_all_edges_cb.config(state='normal')
             self.output_listbox.config(state='disabled')
@@ -14771,8 +15509,6 @@ class App:
                 self.generate_btn.config(state='disabled', bg='#808080')
                 self.output_info_label.config(text=self.output_summary_text, fg='gray')
         else:
-            if hasattr(self, 'export_centroid_cb') and self.export_centroid_cb:
-                self.export_centroid_cb.config(state='normal')
             if hasattr(self, 'export_all_edges_cb') and self.export_all_edges_cb:
                 self.export_all_edges_cb.config(state='normal')
             self.output_listbox.config(state='normal')
@@ -14868,17 +15604,22 @@ class App:
                 messagebox.showwarning("Error", "Please select ONE output from the list")
                 return
 
-        if mode == "harmonic":
-            self.export_centroid_var.set(False)
-            export_centroid = False
-        else:
-            export_centroid = bool(self.export_centroid_var.get())
+        export_centroid = False
+        if mode != "harmonic":
+            try:
+                var_locations = self.reader.get_variable_locations()
+                needs_element_contour = any(var_locations.get(v, 'node') == 'element' for v in [selected_output] if v)
+                if needs_element_contour:
+                    export_centroid = True
+                    self.st.set("Element output detected: element data auto-embedded for extrapolation support")
+            except Exception:
+                pass
         export_all_edges = bool(self.export_all_edges_var.get())
 
         start_ts = time.perf_counter()
         self.update_progress(
             0,
-            "Generating ({}) : {} | Centroid: {} | All Edges Opt: {} | Cache: Auto".format(
+            "Generating ({}) : {} | Element Data: {} | All Edges Opt: {} | Cache: Auto".format(
                 mode.capitalize(), selected_output, "On" if export_centroid else "Off",
                 "On" if export_all_edges else "Off"
             )
@@ -14923,7 +15664,7 @@ class App:
                 message += "Materials: n/a\n"
             message += "Mode: {}\n".format(mode.capitalize())
             message += "Selected Output: {}\n".format(selected_output)
-            message += "Centroid export: {}\n".format("On" if export_centroid else "Off")
+            message += "Element data for extrapolation: {}\n".format("On" if export_centroid else "Off")
             message += "All Edges option in HTML: {}\n".format("On" if export_all_edges else "Off")
             message += "Cache: Auto\n"
             if selected_output != 'Displacement':
