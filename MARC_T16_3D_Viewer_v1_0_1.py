@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T16 3D VIEWER v1.0.17 - Vibracoustic EU FEA Department
+T16 3D VIEWER v1.0.18 - Vibracoustic EU FEA Department
 NEW: GUI with LabelFrame steps, progress title, watermark, Guideline button
 NEW: Full 360-degree rotation and translation
 NEW: GIF export with start/end increment range
@@ -32,6 +32,7 @@ CHANGE: File Information now shows the current user name
 CHANGE: Sidebar control sections can now be reordered as blue cards by dragging their headers
 CHANGE: Animation card is now draggable with the same grab header used by the other sidebar cards
 CHANGE: File Information is now a fixed blue card with bold labels and stays pinned at the top of the sidebar
+CHANGE: Visualization Standards now include CC1/CC2_B TETRA and HEXA variants with the requested extrapolation mappings
 Author: Leandro Barbosa
 """
 
@@ -84,8 +85,10 @@ EXTRAPOLATION_STANDARD_PRESETS = [
     {"name": "VISU13", "info": "Magnitude of displacement to the nodes", "method": None, "avg": None},
     {"name": "VISU15a", "info": "Stress of Mises averaged to the nodes", "method": "linear", "avg": "on"},
     {"name": "VISU15b", "info": "Stress of Mises averaged to the nodes at the opposite load to VISU15a", "method": "linear", "avg": "on"},
-    {"name": "VISU_CC1", "info": "Nominal Strains evraged to the element faces. Used for the output: eps1_en.", "method": "average", "avg": "on"},
-    {"name": "VISU_CC2_B", "info": "Vibracoustic Damage B4 Dimensionless and Normalized Value averaged on elements centroid. Used for Damage Analysis (Rubber).", "method": "average", "avg": "on"},
+    {"name": "VISU_CC1_TETRA", "info": "Nominal Strains evraged to the element faces. Used for the output: eps1_en.", "method": "average", "avg": "on"},
+    {"name": "VISU_CC1_HEXA", "info": "Nominal Strains evraged to the element faces. Used for the output: eps1_en.", "method": "average", "avg": "off"},
+    {"name": "VISU_CC2_B_TETRA", "info": "Vibracoustic Damage B4 Dimensionless and Normalized Value averaged on elements centroid. Used for Damage Analysis (Rubber).", "method": "average", "avg": "on"},
+    {"name": "VISU_CC2_B_HEXA", "info": "Vibracoustic Damage B4 Dimensionless and Normalized Value averaged on elements centroid. Used for Damage Analysis (Rubber).", "method": "average", "avg": "off"},
     {"name": "VISU_PL6", "info": "Stress of Mises averaged to the nodes. Used for Plastic parts.", "method": "linear", "avg": "on"},
     {"name": "VISU_PL7", "info": "Maximal Principal Stress averaged to the nodes. Used for Plastic parts.", "method": "linear", "avg": "on"},
 ]
@@ -2407,7 +2410,7 @@ Scroll Wheel: Zoom
 <div class="lg">
 ''' + ('<img src="' + logo_data_uri + '" alt="Vibracoustic">' if logo_data_uri else '<h1>Vibracoustic</h1>') + '''
 <h2>T16 3D Viewer</h2>
-<span>European FEA Department - v1.0.17</span>
+<span>European FEA Department - v1.0.18</span>
 </div>
 <div class="p sidebar-card file-info-card"><div class="pt"><span>File Information</span></div>
 <div class="ir ir-file-name"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
@@ -15760,7 +15763,7 @@ class App:
         # Title labels - centered
         tk.Label(tf, text="Vibracoustic", font=('Arial', 18, 'bold'), fg='white', bg='#d4542a', pady=3).pack()
         tk.Label(tf, text="T16 3D Viewer", font=('Arial', 12), fg='white', bg='#d4542a', pady=1).pack()
-        tk.Label(tf, text="European FEA Department - v1.0.3", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
+        tk.Label(tf, text="European FEA Department - v1.0.18", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
         
         # Guideline button - floating in top-right corner of title frame
         guideline_btn = tk.Button(tf, text="Guideline", command=self.open_guideline,
