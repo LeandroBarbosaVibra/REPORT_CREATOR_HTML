@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-VMAP 3D VIEWER v1.0.20 - Vibracoustic EU FEA Department
+VMAP 3D VIEWER v1.0.37 - Vibracoustic EU FEA Department
 NEW: GUI with LabelFrame steps, progress title, watermark, Guideline button
 NEW: Full 360-degree rotation and translation
 NEW: GIF export with start/end increment range
@@ -57,7 +57,7 @@ GUIDELINE_PATH = r"\\frafil002\VC_FEA\VC-Marc_Post\Marc_Tools_Guideline\Marc_VMA
 LOGO_SVG_PATH = r"\\frafil002\VC_FEA\VC-Marc_Post\Marc_Python\Canvas\Vibracoustic.svg"
 VIBRA_SVG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VIBRA.svg")
 JSON_SCRIPT_CHUNK_SIZE = 200000
-CACHE_SCHEMA_VERSION = "vmap_3d_viewer_cache_2026_04_01_zoomvalues1"
+CACHE_SCHEMA_VERSION = "vmap_3d_viewer_cache_2026_04_03_restore_functional_base1"
 EXTRAPOLATION_STANDARD_PRESETS = [
     {"name": "VISU1", "info": "Stress of Mises averaged to the nodes", "method": "linear", "avg": "on"},
     {"name": "VISU2", "info": "Stress of Mises averaged to the element faces", "method": "translate", "avg": "off"},
@@ -151,6 +151,17 @@ def pack_norm_i16_b64(norm_values):
         arr = np.nan_to_num(np.asarray(norm_values, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         q = np.clip(np.round(arr * 32767.0), 0, 32767).astype(np.int16)
         return _b64.b64encode(q.tobytes()).decode('ascii')
+    except Exception:
+        return None
+
+
+def pack_int32_b64(values):
+    if values is None:
+        return None
+    try:
+        import base64 as _b64
+        arr = np.asarray(values, dtype=np.int32)
+        return _b64.b64encode(arr.tobytes()).decode('ascii')
     except Exception:
         return None
 
@@ -318,6 +329,7 @@ DAT_MATERIAL_SKIP_TOKENS = set([
     "LOADCASE",
 ])
 DAT_MATERIAL_NAME_RE = _re.compile(r'([A-Za-z][A-Za-z0-9_\-./]{1,120})\s*$')
+DAT_MATERIAL_ID_RE = _re.compile(r'(-?\d+)')
 
 
 def _material_norm_key(name):
@@ -414,11 +426,176 @@ def extract_material_names_from_dat(dat_path, lookahead=10):
     return out
 
 
+def extract_material_entries_from_dat(dat_path, lookahead=10):
+    if not dat_path or (not os.path.exists(dat_path)):
+        return []
+    try:
+        with open(dat_path, "r", encoding="latin1", errors="ignore") as df:
+            lines = df.read().splitlines()
+    except Exception:
+        return []
+
+    out = []
+    seen = set()
+    n_lines = len(lines)
+    for i in range(n_lines):
+        card = lines[i].strip().lower()
+        if card not in DAT_MATERIAL_MODEL_CARDS:
+            continue
+        end_j = min(n_lines, i + 1 + max(1, int(lookahead)))
+        for j in range(i + 1, end_j):
+            row = lines[j].strip()
+            if not row or row.startswith("$"):
+                continue
+            row_low = row.lower()
+            if row_low in DAT_MATERIAL_MODEL_CARDS and j > i + 1:
+                break
+            if row_low.startswith("table") or row_low.startswith("loadcase"):
+                break
+            m = DAT_MATERIAL_NAME_RE.search(row)
+            if not m:
+                continue
+            token = m.group(1).strip()
+            prefix = row[:m.start(1)]
+            if not _re.search(r'\d', prefix):
+                continue
+            if token.upper() in DAT_MATERIAL_SKIP_TOKENS:
+                continue
+            nkey = _material_norm_key(token)
+            if not nkey or nkey in seen:
+                break
+            seen.add(nkey)
+            id_match = DAT_MATERIAL_ID_RE.search(prefix or "")
+            mat_id = safe_number(id_match.group(1), None, as_int=True) if id_match else None
+            out.append({"id": mat_id, "name": token})
+            break
+    return out
+
+
 def resolve_material_names_from_sidecar(source_path):
     dat_path = find_related_dat_file(source_path)
     if not dat_path:
         return [], None
     return extract_material_names_from_dat(dat_path), dat_path
+
+
+def resolve_material_entries_from_sidecar(source_path):
+    dat_path = find_related_dat_file(source_path)
+    if not dat_path:
+        return [], None
+    return extract_material_entries_from_dat(dat_path), dat_path
+
+
+def _material_entries_to_names(entries):
+    out = []
+    seen = set()
+    for entry in (entries or []):
+        name = safe_string((entry or {}).get("name"), "").strip()
+        nkey = _material_norm_key(name)
+        if not nkey or nkey in seen:
+            continue
+        seen.add(nkey)
+        out.append(name)
+    return out
+
+
+def _coerce_material_token_parts(value):
+    if value is None:
+        return None, None
+    try:
+        if isinstance(value, bytes):
+            value = safe_string(value, "").strip()
+    except Exception:
+        pass
+    if isinstance(value, str):
+        txt = safe_string(value, "").strip()
+        if not txt:
+            return None, None
+        num = safe_number(txt, None, as_int=True)
+        if num is not None and str(num) == txt:
+            return num, None
+        return None, txt
+    num = safe_number(value, None, as_int=True)
+    if num is not None:
+        return num, None
+    txt = safe_string(value, "").strip()
+    if txt:
+        return None, txt
+    return None, None
+
+
+def _resolve_material_name_from_token(token, material_entries=None, material_names=None):
+    mat_num, mat_text = _coerce_material_token_parts(token)
+    names = [safe_string(n, "").strip() for n in (material_names or []) if safe_string(n, "").strip()]
+    entries = material_entries or []
+    if mat_text:
+        tkey = _material_norm_key(mat_text)
+        for entry in entries:
+            name = safe_string(entry.get("name"), "").strip()
+            if _material_norm_key(name) == tkey:
+                return name
+        for name in names:
+            if _material_norm_key(name) == tkey:
+                return name
+        return mat_text
+    if mat_num is not None:
+        for entry in entries:
+            eid = safe_number(entry.get("id"), None, as_int=True)
+            if eid is not None and eid == mat_num:
+                name = safe_string(entry.get("name"), "").strip()
+                if name:
+                    return name
+        if 1 <= mat_num <= len(names):
+            return names[mat_num - 1]
+        return "Material {}".format(mat_num)
+    return ""
+
+
+def _extract_vmap_material_token_from_elem(elem_rec):
+    if elem_rec is None:
+        return None
+    try:
+        dtype_names = list(getattr(getattr(elem_rec, "dtype", None), "names", None) or [])
+    except Exception:
+        dtype_names = []
+    priority = []
+    fallback = []
+    for field in dtype_names:
+        low = safe_string(field, "").lower()
+        if "material" in low or low.startswith("mymat") or low == "mat":
+            priority.append(field)
+        elif "property" in low and ("identifier" in low or low.endswith("id")):
+            fallback.append(field)
+    for field in priority + fallback:
+        try:
+            raw = elem_rec[field]
+        except Exception:
+            continue
+        num, txt = _coerce_material_token_parts(raw)
+        if txt or num is not None:
+            return txt if txt else num
+    return None
+
+
+def _extract_vmap_part_material_token(part_group):
+    if part_group is None:
+        return None
+    try:
+        attr_keys = list(part_group.attrs.keys())
+    except Exception:
+        attr_keys = []
+    for key in attr_keys:
+        low = safe_string(key, "").lower()
+        if "material" not in low:
+            continue
+        try:
+            raw = part_group.attrs[key]
+        except Exception:
+            continue
+        num, txt = _coerce_material_token_parts(raw)
+        if txt or num is not None:
+            return txt if txt else num
+    return None
 
 
 # =============================================================================
@@ -440,6 +617,7 @@ class VMAPReader:
         self.n_elements = 0
         self.debug_info = []
         self.material_names = []
+        self.material_entries = []
         self.material_dat_path = None
         # Caches to avoid repeated heavy computations during HTML generation
         self._scalar_cache = {}
@@ -618,12 +796,14 @@ class VMAPReader:
                     self.request_number = req
                     if mats:
                         self.material_names = mats
+                        self.material_entries = [{"id": i + 1, "name": name} for i, name in enumerate(mats)]
         except:
             pass
         if not self.material_names:
             try:
-                side_mats, side_dat = resolve_material_names_from_sidecar(self.filepath)
-                self.material_names = side_mats
+                side_entries, side_dat = resolve_material_entries_from_sidecar(self.filepath)
+                self.material_entries = side_entries
+                self.material_names = _material_entries_to_names(side_entries)
                 self.material_dat_path = side_dat
             except Exception:
                 pass
@@ -634,6 +814,7 @@ class VMAPReader:
             if geom_path in f:
                 for part_id in f[geom_path].keys():
                     part = f[geom_path][part_id]
+                    part_material_token = _extract_vmap_part_material_token(part)
                     
                     if 'POINTS' in part:
                         pts = part['POINTS']
@@ -672,10 +853,17 @@ class VMAPReader:
                                 try:
                                     elem = e[0] if hasattr(e, '__len__') and len(e.shape) > 0 else e
                                     connectivity_ids = [int(n) for n in elem['myConnectivity']]
+                                    material_token = _extract_vmap_material_token_from_elem(elem)
+                                    material_name = _resolve_material_name_from_token(
+                                        material_token if material_token is not None else part_material_token,
+                                        self.material_entries,
+                                        self.material_names
+                                    )
                                     self.elements.append({
                                         'id': int(elem['myIdentifier']),
                                         'type': int(elem['myElementType']),
-                                        'connectivity_ids': connectivity_ids
+                                        'connectivity_ids': connectivity_ids,
+                                        'material_name': material_name
                                     })
                                 except:
                                     pass
@@ -1376,6 +1564,67 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
     
     elem_ids_list = [int(e.get("id", i + 1)) for i, e in enumerate(reader.elements)]
     elem_ids_json = json.dumps(elem_ids_list, separators=(',', ':'))
+    elem_conn_offsets = [0]
+    elem_conn_flat = []
+    for elem in reader.elements:
+        try:
+            conn = reader.get_connectivity_as_indices(elem) or []
+        except Exception:
+            conn = []
+        n = len(conn)
+        if n == 4:
+            export_conn = conn[:4]
+        elif n == 6:
+            export_conn = conn[:6]
+        elif n >= 8:
+            export_conn = conn[:8]
+        else:
+            export_conn = []
+        elem_conn_flat.extend(int(idx) for idx in export_conn)
+        elem_conn_offsets.append(len(elem_conn_flat))
+    elem_conn_offsets_json = json.dumps(
+        {'i32_b64': pack_int32_b64(elem_conn_offsets), 'count': len(elem_conn_offsets)},
+        separators=(',', ':')
+    )
+    elem_conn_data_json = json.dumps(
+        {'i32_b64': pack_int32_b64(elem_conn_flat), 'count': len(elem_conn_flat)},
+        separators=(',', ':')
+    )
+
+    material_display_names = []
+    material_name_to_idx = {}
+    for raw_name in (getattr(reader, "material_names", []) or []):
+        name = safe_string(raw_name, "").strip()
+        nkey = _material_norm_key(name)
+        if not nkey or nkey in material_name_to_idx:
+            continue
+        material_name_to_idx[nkey] = len(material_display_names)
+        material_display_names.append(name)
+    elem_material_map = []
+    has_unknown_material = False
+    for elem in reader.elements:
+        material_name = safe_string(elem.get("material_name"), "").strip()
+        if not material_name and len(material_display_names) == 1:
+            elem_material_map.append(0)
+            continue
+        nkey = _material_norm_key(material_name)
+        if nkey:
+            if nkey not in material_name_to_idx:
+                material_name_to_idx[nkey] = len(material_display_names)
+                material_display_names.append(material_name)
+            elem_material_map.append(material_name_to_idx[nkey])
+        else:
+            elem_material_map.append(-1)
+            has_unknown_material = True
+    if has_unknown_material:
+        unknown_idx = material_name_to_idx.get("__UNKNOWN__")
+        if unknown_idx is None:
+            unknown_idx = len(material_display_names)
+            material_name_to_idx["__UNKNOWN__"] = unknown_idx
+            material_display_names.append("Unassigned / Unknown")
+        elem_material_map = [unknown_idx if idx < 0 else idx for idx in elem_material_map]
+    material_names_json = json.dumps(material_display_names, separators=(',', ':'))
+    elem_material_map_json = json.dumps(elem_material_map, separators=(',', ':'))
     
     # Extract boundary (external) faces - faces that appear only once
     update_progress(65, "Extracting boundary faces...")
@@ -1402,6 +1651,10 @@ def generate_html(reader, progress_callback=None, selected_output=None, viewer_m
         ('FEM', face_element_map_json),
         ('NIDS', node_ids_json),
         ('EIDS', elem_ids_json),
+        ('ECOFF', elem_conn_offsets_json),
+        ('ECON', elem_conn_data_json),
+        ('MATN', material_names_json),
+        ('EMM', elem_material_map_json),
         ('C', colors_json),
         ('SL', states_json)
     ]
@@ -1798,6 +2051,22 @@ input[type="range"]{width:100%;accent-color:#2196F3}
 .xy-modal-check{display:flex;align-items:flex-start;gap:8px;margin:10px 0 4px 0;font-size:10px;color:#444}
 .xy-modal-check input{margin-top:2px;accent-color:#8E24AA}
 .xy-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}
+.matvis-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.matvis-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid #D9E2F1;border-radius:8px;background:#F8FBFF}
+.matvis-row.matvis-hidden{background:#FFF5F5;border-color:#F3C2C2}
+.matvis-name{font-size:10px;font-weight:700;color:#1F3B63;line-height:1.35}
+.matvis-count{font-size:9px;color:#666;font-weight:600}
+.matvis-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.matvis-btn{min-width:52px;padding:3px 10px;border:none;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer}
+.matvis-btn-show{background:#CFD8DC;color:#37474F}
+.matvis-btn-show.active{background:#00C853;color:#fff}
+.matvis-btn-hide{background:#FFCDD2;color:#B71C1C}
+.matvis-btn-hide.active{background:#D32F2F;color:#fff}
+.matvis-empty{padding:10px 12px;border:1px dashed #B0BEC5;border-radius:8px;background:#FAFAFA;font-size:10px;line-height:1.45;color:#666}
+.matvis-floating-layer{position:fixed;inset:0;display:none;pointer-events:none;z-index:10025}
+.matvis-floating-window{position:fixed;top:96px;left:calc(50vw - 230px);width:min(560px,94vw);max-height:min(78vh,680px);overflow:auto;background:rgba(255,255,255,0.985);border:2px solid #1976D2;border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,0.3);padding:14px 16px;pointer-events:auto}
+.matvis-floating-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;cursor:move;user-select:none}
+.matvis-floating-title span{font-size:13px;font-weight:700;color:#1565C0}
 .legend-extrap-summary{margin-top:6px;padding:6px 8px;border:1px solid #D1C4E9;border-radius:6px;background:#F6F0FB;font-size:9px;line-height:1.4;color:#5E35B1}
 .legend-extrap-info{margin-top:8px;padding:8px 10px;border-radius:8px;background:#EEF6FF;border-left:4px solid #1E88E5;font-size:10px;line-height:1.45;color:#0D47A1}
 #xy-forecast-fields{display:flex;flex-direction:column;gap:8px}
@@ -1903,7 +2172,7 @@ Scroll Wheel: Zoom
 <div class="lg">
 ''' + ('<img src="' + logo_data_uri + '" alt="Vibracoustic">' if logo_data_uri else '<h1>Vibracoustic</h1>') + '''
 <h2>VMAP 3D Viewer</h2>
-<span>European FEA Department - v1.0.20</span>
+<span>European FEA Department - v1.0.37</span>
 </div>
 <div class="p sidebar-card file-info-card"><div class="pt"><span>File Information</span></div>
 <div class="ir ir-file-name"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
@@ -1936,6 +2205,7 @@ Scroll Wheel: Zoom
 <div class="ck"><label style="font-size:11px;color:#444">Edges:</label><select id="ed" onchange="tgeMode(this.value)" style="margin-left:6px;font-size:10px;padding:2px 4px;border:1px solid #ccc;border-radius:3px"><option value="feature" selected>Feature Edges</option><option value="none">No Edges</option>''' + all_edges_option_html + '''</select></div>
 <div class="ck"><input type="checkbox" id="wf" onchange="tgw(this.checked)"><label>Wireframe Mode</label></div>
 <div class="ck"><input type="checkbox" id="um" onchange="tgu(this.checked)"><label>Undeformed Mesh</label></div>
+<div class="ck"><label style="font-size:11px;color:#444">Show/Hide:</label><button class="bt bt2" onclick="openMaterialVisibilityDialog()" style="margin-left:6px;font-size:10px;padding:2px 10px">Open</button></div>
 <div class="disp-opt-sec">View</div>
 <div class="ck"><input type="checkbox" id="persp" onchange="tgp(this.checked)"><label>Perspective View</label></div>
 <div class="ck"><input type="checkbox" id="ar" onchange="tgr(this.checked)"><label>Auto Rotate</label></div>
@@ -2019,6 +2289,8 @@ Scroll Wheel: Zoom
 <div class="range-row" id="cut-z-row" style="display:none"><span>Z pos:</span><input type="range" id="cut-z-pos" min="0" max="100" value="50" step="1" oninput="updateCutPlane('z')"><span class="rv" id="cut-z-val">50%</span>
 <select id="cut-z-dir" onchange="updateCutPlane('z')" style="width:40px;font-size:9px;padding:1px"><option value="+">+</option><option value="-">-</option></select></div>
 <div class="ck" style="margin-top:3px"><input type="checkbox" id="cut-hide-planes" onchange="updateAxisCutVisuals()"><label>Hide planes</label></div>
+<div class="ck" style="margin-top:3px"><input type="checkbox" id="cut-section-proj" onchange="tgCutSectionProjection(this.checked)"><label>Section Mesh on Plane</label></div>
+<div style="font-size:10px;color:#666;margin:1px 0 6px 22px">Project the cut element edges onto the active cut plane.</div>
 <div class="disp-opt-sec">Rotation Cut</div>
 <div style="font-size:10px;color:#666;margin-bottom:6px">Rotate a cut plane around a global X, Y, or Z reference line.</div>
 <div class="ck"><input type="checkbox" id="rot-cut-on" onchange="updateRotationCut()"><label>Enable Rotation Cut</label></div>
@@ -2249,6 +2521,17 @@ Scroll Wheel: Zoom
 </div>
 </div>
 </div>
+<div class="matvis-floating-layer" id="material-visibility-overlay">
+<div class="matvis-floating-window" id="material-visibility-window">
+<div class="matvis-floating-title" id="material-visibility-handle"><span id="material-visibility-title">Show / Hide</span><button class="xy-modal-close" onclick="closeMaterialVisibilityDialog()">X</button></div>
+<div id="material-visibility-sub" class="xy-modal-sub">Show or hide element categories.</div>
+<div id="material-visibility-body" class="matvis-list"></div>
+<div class="xy-modal-actions">
+<button class="xy-btn" onclick="showAllVisibilityCategories()">Show All</button>
+<button class="xy-btn" onclick="closeMaterialVisibilityDialog()">Close</button>
+</div>
+</div>
+</div>
 <div id="st">Ready</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -2294,6 +2577,10 @@ function getFullFaces(){if(!F)F=parseCoreData('F',[]);return F;}
 function getFullFaceElemMap(){if(!FEM)FEM=parseCoreData('FEM',[]);return FEM;}
 const NIDS=parseCoreData('NIDS',[]);
 const EIDS=parseCoreData('EIDS',[]);
+const ECOFF_RAW=parseCoreData('ECOFF',null);
+const ECON_RAW=parseCoreData('ECON',null);
+const MATN=parseCoreData('MATN',[]);
+const EMM=parseCoreData('EMM',[]);
 const NIDS_REV={};NIDS.forEach(function(id,i){NIDS_REV[id]=i;});
 const EIDS_REV={};EIDS.forEach(function(id,i){EIDS_REV[id]=i;});
 function realElemIdToIdx(realId){var idx=EIDS_REV[realId];return idx!==undefined?idx:(realId>=0&&realId<EIDS.length?realId:-1);}
@@ -2327,6 +2614,18 @@ out[i]=v/32767.0;
 return out;
 }catch(e){return null;}
 }
+function decodeInt32B64(b64,count){
+var bytes=decodeB64Bytes(b64);
+if(!bytes)return null;
+try{
+var buf=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+var arr=new Int32Array(buf);
+var n=(count&&count>0)?Math.min(count,arr.length):arr.length;
+var out=new Array(n);
+for(var i=0;i<n;i++)out[i]=arr[i]|0;
+return out;
+}catch(e){return null;}
+}
 function decodeNodesF32B64(b64,nNodes){
 var bytes=decodeB64Bytes(b64);
 if(!bytes)return null;
@@ -2352,6 +2651,8 @@ C=decodeNormI16B64(C.i16_b64,C.count);
 }
 return C;
 }
+const ECOFF=(ECOFF_RAW&&ECOFF_RAW.i32_b64!==undefined)?decodeInt32B64(ECOFF_RAW.i32_b64,ECOFF_RAW.count):null;
+const ECON=(ECON_RAW&&ECON_RAW.i32_b64!==undefined)?decodeInt32B64(ECON_RAW.i32_b64,ECON_RAW.count):null;
 const CR=''' + json.dumps(color_range, separators=(',', ':')) + ''';
 const SL=parseCoreData('SL',[]);
 const STATE_NODE_TAG_MAP=''' + state_nodes_tag_map_json + ''';
@@ -2943,7 +3244,7 @@ const CENTROID_EXPORTED=''' + ('true' if export_centroid else 'false') + ''';
 const ALL_EDGES_EXPORTED=''' + ('true' if export_all_edges else 'false') + ''';
 const EXTERNAL_SURFACE_ONLY=''' + ('true' if harmonic_mode else 'false') + ''';
 const DEFAULT_SCALE_FACTOR=''' + harmonic_initial_scale_text + ''';
-const BUILD_REV="6.1.1-zoomvalues-2026-04-01";
+const BUILD_REV="6.1.4-floating-groupvis-2026-04-03";
 const LOGO_URI="''' + (logo_data_uri if logo_data_uri else "") + '''";
 var fileTitleOverlayEl=document.getElementById('file-title-overlay');
 if(fileTitleOverlayEl)fileTitleOverlayEl.textContent=HTMLNAME+'.html';
@@ -2978,10 +3279,12 @@ let dialogFontPopupEl=null,dialogFontBoxId=null;
 let dialogFontSize=11;
 let tableFormFontSize=10;
 let dialogIdSeed=1,dialogDrag=null;
+let materialVisibilityDrag=null,materialVisibilityWindowPos={left:null,top:null};
 let mouseDownPos={x:0,y:0};
 let visibleFaces=[];
 let visibleElemMap=Object.create(null),visibleNodeMap=Object.create(null),visibleElemFaceMap=Object.create(null);
 let hiddenElemMap=Object.create(null);
+let groupVisibilityState=[];
 let hideElemMode=false,hideAllConnectedMode=false,hideSelStart=null,hideSelEnd=null,hideSelDiv=null;
 let hideHoverElemIdx=-1,hideHoverEdges=null;
 let elemNodesMap=null,nodeElemsMap=null;
@@ -3031,6 +3334,7 @@ let cutPlanes={x:{on:false,pos:50,dir:'+'},y:{on:false,pos:50,dir:'+'},z:{on:fal
 let meshBBox={xmin:0,xmax:1,ymin:0,ymax:1,zmin:0,zmax:1};
 let axisCutPlaneMeshes={x:null,y:null,z:null},axisCutPlaneEdges={x:null,y:null,z:null};
 let rotationCutLine=null,rotationCutPlaneMesh=null,rotationCutPlaneEdges=null,rotationCutPlaneMesh2=null,rotationCutPlaneEdges2=null;
+let cutSectionProjectionOn=false,cutSectionLines=null,cutSectionLinesWide=null,cutSectionSurface=null;
 let vrfEnabled=false,vrfLo=0,vrfHi=1;
 let xyAppliedRange={xmin:'auto',xmax:'auto',ymin:'auto',ymax:'auto'};
 let xySecAppliedRange={ymin:'auto',ymax:'auto'};
@@ -3116,7 +3420,7 @@ return (meshNodesRef&&meshNodesRef.length)?meshNodesRef:getRenderNodes();
 }
 
 function isElemHidden(elemIdx){
-return !!hiddenElemMap[elemIdx];
+return !!hiddenElemMap[elemIdx]||isElemHiddenByConnectedGroup(elemIdx);
 }
 
 function isElemVisibleNow(elemIdx){
@@ -3131,8 +3435,138 @@ return !!visibleNodeMap[nodeIdx];
 
 function countHiddenElements(){
 var n=0;
-for(var k in hiddenElemMap){if(Object.prototype.hasOwnProperty.call(hiddenElemMap,k)&&hiddenElemMap[k])n++;}
+var total=Math.max(EIDS.length,EMM.length,noContourElemGroup?noContourElemGroup.length:0);
+for(var i=0;i<total;i++){if(isElemHidden(i))n++;}
 return n;
+}
+
+function ensureConnectedGroupVisibilityState(){
+ensureNoContourGroups();
+var len=noContourGroupSizes?noContourGroupSizes.length:0;
+if(!Array.isArray(groupVisibilityState))groupVisibilityState=[];
+if(groupVisibilityState.length===len)return;
+var next=new Array(len);
+for(var i=0;i<len;i++)next[i]=(groupVisibilityState[i]!==false);
+groupVisibilityState=next;
+}
+
+function isElemHiddenByConnectedGroup(elemIdx){
+if(!noContourElemGroup||!Array.isArray(groupVisibilityState)||groupVisibilityState.length===0)return false;
+if(elemIdx===undefined||elemIdx===null||elemIdx<0||elemIdx>=noContourElemGroup.length)return false;
+var gid=noContourElemGroup[elemIdx];
+if(gid===undefined||gid===null||gid<0||gid>=groupVisibilityState.length)return false;
+return groupVisibilityState[gid]===false;
+}
+
+function renderMaterialVisibilityDialog(){
+var titleEl=document.getElementById('material-visibility-title');
+var subEl=document.getElementById('material-visibility-sub');
+var body=document.getElementById('material-visibility-body');
+if(!titleEl||!subEl||!body)return;
+ensureConnectedGroupVisibilityState();
+titleEl.textContent='Connected Groups';
+subEl.innerHTML='Uses the same connected groups identified in <b>No contour</b>. Hide a group to hide all its elements in the mesh.';
+if(!noContourGroupSizes||noContourGroupSizes.length===0){
+body.innerHTML='<div class="matvis-empty">No connected groups are available for this mesh.</div>';
+return;
+}
+var html='';
+for(var i=0;i<noContourGroupSizes.length;i++){
+var visible=(groupVisibilityState[i]!==false);
+var color=(i<noContourGroupColors.length)?noContourGroupColors[i]:ncDefaultColor(i);
+    html+='<div class="matvis-row'+(visible?'':' matvis-hidden')+'">'+
+    '<div>'+
+    '<div class="matvis-name"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+color+';margin-right:6px;vertical-align:middle;border:1px solid rgba(0,0,0,0.18)"></span>Connected Group '+(i+1)+'</div>'+
+    '<div class="matvis-count">'+noContourGroupSizes[i]+' element(s)</div>'+
+    '</div>'+
+    '<div class="matvis-actions">'+
+    '<button class="matvis-btn matvis-btn-show'+(visible?' active':'')+'" onclick="setConnectedGroupVisibility('+i+',true)">Show</button>'+
+    '<button class="matvis-btn matvis-btn-hide'+(visible?'':' active')+'" onclick="setConnectedGroupVisibility('+i+',false)">Hide</button>'+
+    '</div>'+
+    '</div>';
+}
+body.innerHTML=html;
+}
+
+function refreshMaterialVisibilityDialog(){
+var overlay=document.getElementById('material-visibility-overlay');
+if(overlay&&overlay.style.display==='block')renderMaterialVisibilityDialog();
+}
+
+function clampMaterialVisibilityWindowPos(left,top){
+var win=document.getElementById('material-visibility-window');
+var width=win?(win.offsetWidth||560):560;
+var height=win?(win.offsetHeight||420):420;
+var maxLeft=Math.max(8,window.innerWidth-width-8);
+var maxTop=Math.max(8,window.innerHeight-height-8);
+var outLeft=isFinite(left)?left:16;
+var outTop=isFinite(top)?top:16;
+if(outLeft<8)outLeft=8;
+if(outTop<8)outTop=8;
+if(outLeft>maxLeft)outLeft=maxLeft;
+if(outTop>maxTop)outTop=maxTop;
+return {left:outLeft,top:outTop};
+}
+
+function applyMaterialVisibilityWindowPos(){
+var win=document.getElementById('material-visibility-window');
+if(!win)return;
+var pos=clampMaterialVisibilityWindowPos(materialVisibilityWindowPos.left,materialVisibilityWindowPos.top);
+materialVisibilityWindowPos.left=pos.left;
+materialVisibilityWindowPos.top=pos.top;
+win.style.left=pos.left+'px';
+win.style.top=pos.top+'px';
+}
+
+function ensureMaterialVisibilityWindowPos(){
+if(isFinite(materialVisibilityWindowPos.left)&&isFinite(materialVisibilityWindowPos.top))return;
+var win=document.getElementById('material-visibility-window');
+var width=win?(win.offsetWidth||560):560;
+materialVisibilityWindowPos.left=Math.max(16,Math.round(window.innerWidth-width-26));
+materialVisibilityWindowPos.top=88;
+	materialVisibilityWindowPos=clampMaterialVisibilityWindowPos(materialVisibilityWindowPos.left,materialVisibilityWindowPos.top);
+}
+
+function openMaterialVisibilityDialog(){
+renderMaterialVisibilityDialog();
+var overlay=document.getElementById('material-visibility-overlay');
+if(overlay)overlay.style.display='block';
+ensureMaterialVisibilityWindowPos();
+applyMaterialVisibilityWindowPos();
+}
+
+function closeMaterialVisibilityDialog(){
+var overlay=document.getElementById('material-visibility-overlay');
+if(overlay)overlay.style.display='none';
+materialVisibilityDrag=null;
+}
+
+function setConnectedGroupVisibility(groupIdx,visible){
+ensureConnectedGroupVisibilityState();
+if(groupIdx===undefined||groupIdx===null||groupIdx<0||groupIdx>=groupVisibilityState.length)return;
+var nextVisible=!!visible;
+if(groupVisibilityState[groupIdx]===nextVisible){
+refreshMaterialVisibilityDialog();
+return;
+}
+groupVisibilityState[groupIdx]=nextVisible;
+bumpHiddenElemRevision();
+markValueTooltipHiddenByElement();
+refreshMaterialVisibilityDialog();
+refreshAfterHideElementsChange('Connected Group '+(groupIdx+1)+' '+(nextVisible?'shown':'hidden')+' ('+noContourGroupSizes[groupIdx]+' element(s)) - total hidden: '+countHiddenElements(),{defer:true});
+}
+
+function showAllVisibilityCategories(){
+ensureConnectedGroupVisibilityState();
+if(!groupVisibilityState.length)return;
+var changed=false;
+for(var i=0;i<groupVisibilityState.length;i++){
+if(groupVisibilityState[i]===false){groupVisibilityState[i]=true;changed=true;}
+}
+refreshMaterialVisibilityDialog();
+if(!changed)return;
+bumpHiddenElemRevision();
+refreshAfterHideElementsChange('All connected groups shown - total hidden: '+countHiddenElements(),{defer:true});
 }
 
 function hideValueTooltip(resetInfo){
@@ -3666,6 +4100,7 @@ if(noContour){
 cm(getRenderNodes(),null);
 updateDialogBoxesVisuals();
 }
+refreshMaterialVisibilityDialog();
 }
 
 function expandHideSelectionWithConnected(elemList){
@@ -3766,6 +4201,7 @@ updateValueWindowsForCut();
 try{if(tableFormVisible)updateTableForm();}catch(e){}
 try{updatePinnedPositions();}catch(e){}
 updateDialogBoxesVisuals();
+refreshMaterialVisibilityDialog();
 if(statusMsg)document.getElementById('st').textContent=statusMsg;
 }
 function refreshAfterHideElementsChange(statusMsg,opts){
@@ -3817,6 +4253,9 @@ refreshAfterHideElementsChange(added+' element(s) hidden'+modeTxt+' - total hidd
 
 function unhideAllElements(){
 hiddenElemMap=Object.create(null);
+if(Array.isArray(groupVisibilityState)&&groupVisibilityState.length){
+for(var i=0;i<groupVisibilityState.length;i++)groupVisibilityState[i]=true;
+}
 bumpHiddenElemRevision();
 refreshAfterHideElementsChange('All hidden elements restored');
 }
@@ -5173,6 +5612,7 @@ uEg=new THREE.LineSegments(new THREE.EdgesGeometry(g2,15),new THREE.LineBasicMat
 uEg.visible=showUndeformed;
 sc.add(uEg);
 }
+if(cutSectionProjectionOn&&anyCutEnabled())applyCutClipping();
 }
 
 function init(){
@@ -6507,6 +6947,30 @@ document.addEventListener('mouseup',function(){tfDrag=false;});
 });
 })();
 
+(function(){
+var win=document.getElementById('material-visibility-window');
+var handle=document.getElementById('material-visibility-handle');
+if(!win||!handle)return;
+handle.addEventListener('mousedown',function(e){
+if(e.target&&e.target.closest&&e.target.closest('button'))return;
+materialVisibilityDrag={ox:e.clientX-win.offsetLeft,oy:e.clientY-win.offsetTop};
+e.preventDefault();
+e.stopPropagation();
+});
+document.addEventListener('mousemove',function(e){
+if(!materialVisibilityDrag)return;
+var pos=clampMaterialVisibilityWindowPos(e.clientX-materialVisibilityDrag.ox,e.clientY-materialVisibilityDrag.oy);
+materialVisibilityWindowPos.left=pos.left;
+materialVisibilityWindowPos.top=pos.top;
+applyMaterialVisibilityWindowPos();
+});
+document.addEventListener('mouseup',function(){materialVisibilityDrag=null;});
+window.addEventListener('resize',function(){
+var overlay=document.getElementById('material-visibility-overlay');
+if(overlay&&overlay.style.display==='block')applyMaterialVisibilityWindowPos();
+});
+})();
+
 // ==================== PINNED VALUES ====================
 function pinNodeValue(nodeIdx){
 // Check if already pinned - if so, unpin it
@@ -7552,6 +8016,706 @@ constant:rotCut.constant
 }
 return cuts;
 }
+function getActiveClipHalfspaces(){
+var planes=[];
+['x','y','z'].forEach(function(axis){
+var cut=buildAxisAlignedCut(axis);
+if(!cut)return;
+var visual=getAxisCutVisualData(axis);
+if(!visual)return;
+planes.push({
+id:'axis-'+axis,
+normal:cut.normal.slice(),
+constant:cut.constant,
+point:[visual.point.x,visual.point.y,visual.point.z]
+});
+});
+var rotData=getRotationCutData();
+if(rotData&&rotData.enabled){
+planes.push({
+id:'rotation-primary',
+normal:[rotData.primary.clipNormal.x,rotData.primary.clipNormal.y,rotData.primary.clipNormal.z],
+constant:rotData.primary.constant,
+point:[rotData.refPoint.x,rotData.refPoint.y,rotData.refPoint.z]
+});
+if(rotData.state&&rotData.state.angle2On&&rotData.secondary){
+planes.push({
+id:'rotation-secondary',
+normal:[rotData.secondary.clipNormal.x,rotData.secondary.clipNormal.y,rotData.secondary.clipNormal.z],
+constant:rotData.secondary.constant,
+point:[rotData.refPoint.x,rotData.refPoint.y,rotData.refPoint.z]
+});
+}
+}
+return planes;
+}
+function getClipPlaneSignedDistance(p,plane){
+if(!p||!plane||!plane.normal)return -Infinity;
+return (p[0]*plane.normal[0])+(p[1]*plane.normal[1])+(p[2]*plane.normal[2])+plane.constant;
+}
+function addCutSectionPoint(points,p,tolSq){
+if(!p)return;
+for(var i=0;i<points.length;i++){
+var q=points[i];
+var dx=p[0]-q[0],dy=p[1]-q[1],dz=p[2]-q[2];
+if((dx*dx+dy*dy+dz*dz)<=tolSq)return;
+}
+points.push([p[0],p[1],p[2]]);
+}
+function getTrianglePlaneIntersection(face,nodes,plane,eps){
+if(!face||face.length<3||!nodes||!plane)return null;
+var pts=[];
+var tolSq=eps*eps;
+var edgePairs=[[0,1],[1,2],[2,0]];
+for(var ei=0;ei<edgePairs.length;ei++){
+var edge=edgePairs[ei];
+var ia=face[edge[0]],ib=face[edge[1]];
+if(ia<0||ib<0||ia>=nodes.length||ib>=nodes.length)continue;
+var pa=nodes[ia],pb=nodes[ib];
+if(!pa||!pb)continue;
+var da=getClipPlaneSignedDistance(pa,plane);
+var db=getClipPlaneSignedDistance(pb,plane);
+var aOn=Math.abs(da)<=eps;
+var bOn=Math.abs(db)<=eps;
+if(aOn&&bOn){
+addCutSectionPoint(pts,pa,tolSq);
+addCutSectionPoint(pts,pb,tolSq);
+continue;
+}
+if(aOn)addCutSectionPoint(pts,pa,tolSq);
+if(bOn)addCutSectionPoint(pts,pb,tolSq);
+if((da<-eps&&db>eps)||(da>eps&&db<-eps)){
+var denom=da-db;
+if(Math.abs(denom)>1e-20){
+var t=da/denom;
+if(t>=-1e-8&&t<=1+1e-8){
+addCutSectionPoint(pts,[
+pa[0]+(pb[0]-pa[0])*t,
+pa[1]+(pb[1]-pa[1])*t,
+pa[2]+(pb[2]-pa[2])*t
+],tolSq);
+}
+}
+}
+}
+if(pts.length<2)return null;
+if(pts.length===2)return [pts[0],pts[1]];
+var bestA=pts[0],bestB=pts[1],bestD=-1;
+for(var i=0;i<pts.length;i++){
+for(var j=i+1;j<pts.length;j++){
+var dx=pts[i][0]-pts[j][0],dy=pts[i][1]-pts[j][1],dz=pts[i][2]-pts[j][2];
+var d=dx*dx+dy*dy+dz*dz;
+if(d>bestD){bestD=d;bestA=pts[i];bestB=pts[j];}
+}
+}
+return bestD>tolSq?[bestA,bestB]:null;
+}
+function clipSegmentToHalfspaces(a,b,planes,skipPlaneId,eps){
+var t0=0,t1=1;
+for(var i=0;i<planes.length;i++){
+var plane=planes[i];
+if(!plane||plane.id===skipPlaneId)continue;
+var d0=getClipPlaneSignedDistance(a,plane);
+var d1=getClipPlaneSignedDistance(b,plane);
+var in0=d0>=-eps,in1=d1>=-eps;
+if(in0&&in1)continue;
+if(!in0&&!in1)return null;
+var denom=d0-d1;
+if(Math.abs(denom)<=1e-20)return null;
+var t=d0/denom;
+if(!in0){if(t>t0)t0=t;}
+else if(!in1){if(t<t1)t1=t;}
+if(t0>t1+1e-8)return null;
+}
+var outA=[
+a[0]+(b[0]-a[0])*t0,
+a[1]+(b[1]-a[1])*t0,
+a[2]+(b[2]-a[2])*t0
+];
+var outB=[
+a[0]+(b[0]-a[0])*t1,
+a[1]+(b[1]-a[1])*t1,
+a[2]+(b[2]-a[2])*t1
+];
+var dx=outA[0]-outB[0],dy=outA[1]-outB[1],dz=outA[2]-outB[2];
+if((dx*dx+dy*dy+dz*dz)<=eps*eps)return null;
+return [outA,outB];
+}
+function getCutSectionSegmentKey(a,b,tol,planeId){
+function qp(p){
+return [
+Math.round(p[0]/tol),
+Math.round(p[1]/tol),
+Math.round(p[2]/tol)
+].join(',');
+}
+var ka=qp(a),kb=qp(b);
+return planeId+'|'+(ka<kb?(ka+'|'+kb):(kb+'|'+ka));
+}
+function getSectionElementConn(elemIdx,nodes){
+if(!ECOFF||!ECON||elemIdx===undefined||elemIdx===null||elemIdx<0||elemIdx+1>=ECOFF.length||!nodes)return null;
+var s=ECOFF[elemIdx]|0,e=ECOFF[elemIdx+1]|0;
+if(!(e>s))return null;
+var out=[];
+for(var i=s;i<e&&i<ECON.length;i++){
+var ni=ECON[i]|0;
+if(ni>=0&&ni<nodes.length)out.push(ni);
+}
+return out.length>=4?out:null;
+}
+function getSectionElementEdgePairs(conn){
+if(!conn)return null;
+var n=conn.length;
+if(n===4)return [[0,1],[1,2],[2,0],[0,3],[1,3],[2,3]];
+if(n===6)return [[0,1],[1,2],[2,0],[3,4],[4,5],[5,3],[0,3],[1,4],[2,5]];
+if(n>=8)return [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+return null;
+}
+function isCutSectionElementMode(){
+return !!(((typeof isElementDisplayMode==='function'&&isElementDisplayMode())||centroidMode||isElementLocalContourMode())&&centroidRawColors&&!noContour);
+}
+function getCutSectionNodeRealValue(nodeIdx){
+if(noContour)return curMin;
+if(nodeIdx===undefined||nodeIdx===null||nodeIdx<0)return curMin;
+if(rawColors&&nodeIdx<rawColors.length)return dataMin+rawColors[nodeIdx]*(dataMax-dataMin);
+if(curColors&&nodeIdx<curColors.length){
+var uR=curMax-curMin;if(Math.abs(uR)<1e-30)uR=1;
+return curMin+curColors[nodeIdx]*uR;
+}
+return curMin;
+}
+function getCutSectionFaceRealValue(faceElemIdx){
+if(isCutSectionElementMode()&&faceElemIdx!==undefined&&faceElemIdx!==null&&faceElemIdx>=0&&faceElemIdx<centroidRawColors.length){
+return centroidDataMin+centroidRawColors[faceElemIdx]*(centroidDataMax-centroidDataMin);
+}
+return null;
+}
+function addCutSectionDataPoint(pts,pos,realValue,tolSq){
+for(var i=0;i<pts.length;i++){
+var dx=pts[i].pos[0]-pos[0],dy=pts[i].pos[1]-pos[1],dz=pts[i].pos[2]-pos[2];
+if((dx*dx+dy*dy+dz*dz)<=tolSq){
+pts[i].realValue=(pts[i].realValue+realValue)*0.5;
+return;
+}
+}
+pts.push({pos:[pos[0],pos[1],pos[2]],realValue:realValue});
+}
+function getTrianglePlaneIntersectionData(face,nodes,plane,eps,faceElemIdx){
+if(!face||face.length<3||!nodes||!plane)return null;
+var pts=[];
+var tolSq=eps*eps;
+var edgePairs=[[0,1],[1,2],[2,0]];
+var faceVal=getCutSectionFaceRealValue(faceElemIdx);
+for(var ei=0;ei<edgePairs.length;ei++){
+var edge=edgePairs[ei];
+var ia=face[edge[0]],ib=face[edge[1]];
+if(ia<0||ib<0||ia>=nodes.length||ib>=nodes.length)continue;
+var pa=nodes[ia],pb=nodes[ib];
+if(!pa||!pb)continue;
+var va=(faceVal!==null)?faceVal:getCutSectionNodeRealValue(ia);
+var vb=(faceVal!==null)?faceVal:getCutSectionNodeRealValue(ib);
+var da=getClipPlaneSignedDistance(pa,plane);
+var db=getClipPlaneSignedDistance(pb,plane);
+var aOn=Math.abs(da)<=eps;
+var bOn=Math.abs(db)<=eps;
+if(aOn&&bOn){
+addCutSectionDataPoint(pts,pa,va,tolSq);
+addCutSectionDataPoint(pts,pb,vb,tolSq);
+continue;
+}
+if(aOn)addCutSectionDataPoint(pts,pa,va,tolSq);
+if(bOn)addCutSectionDataPoint(pts,pb,vb,tolSq);
+if((da<-eps&&db>eps)||(da>eps&&db<-eps)){
+var denom=da-db;
+if(Math.abs(denom)>1e-20){
+var t=da/denom;
+if(t>=-1e-8&&t<=1+1e-8){
+addCutSectionDataPoint(pts,[
+pa[0]+(pb[0]-pa[0])*t,
+pa[1]+(pb[1]-pa[1])*t,
+pa[2]+(pb[2]-pa[2])*t
+],va+(vb-va)*t,tolSq);
+}
+}
+}
+}
+if(pts.length<2)return null;
+if(pts.length===2)return [pts[0],pts[1]];
+var bestA=pts[0],bestB=pts[1],bestD=-1;
+for(var i=0;i<pts.length;i++){
+for(var j=i+1;j<pts.length;j++){
+var dx=pts[i].pos[0]-pts[j].pos[0],dy=pts[i].pos[1]-pts[j].pos[1],dz=pts[i].pos[2]-pts[j].pos[2];
+var d=dx*dx+dy*dy+dz*dz;
+if(d>bestD){bestD=d;bestA=pts[i];bestB=pts[j];}
+}
+}
+return bestD>tolSq?[bestA,bestB]:null;
+}
+function lerpCutSectionDataPoint(a,b,t){
+return{
+pos:[
+a.pos[0]+(b.pos[0]-a.pos[0])*t,
+a.pos[1]+(b.pos[1]-a.pos[1])*t,
+a.pos[2]+(b.pos[2]-a.pos[2])*t
+],
+realValue:a.realValue+(b.realValue-a.realValue)*t
+};
+}
+function clipSectionSegmentToHalfspaces(a,b,planes,skipPlaneId,eps){
+var t0=0,t1=1;
+for(var i=0;i<planes.length;i++){
+var plane=planes[i];
+if(!plane||plane.id===skipPlaneId)continue;
+var d0=getClipPlaneSignedDistance(a.pos,plane);
+var d1=getClipPlaneSignedDistance(b.pos,plane);
+var in0=d0>=-eps,in1=d1>=-eps;
+if(in0&&in1)continue;
+if(!in0&&!in1)return null;
+var denom=d0-d1;
+if(Math.abs(denom)<=1e-20)return null;
+var t=d0/denom;
+if(!in0){if(t>t0)t0=t;}
+else if(!in1){if(t<t1)t1=t;}
+if(t0>t1+1e-8)return null;
+}
+var outA=lerpCutSectionDataPoint(a,b,t0);
+var outB=lerpCutSectionDataPoint(a,b,t1);
+var dx=outA.pos[0]-outB.pos[0],dy=outA.pos[1]-outB.pos[1],dz=outA.pos[2]-outB.pos[2];
+if((dx*dx+dy*dy+dz*dz)<=eps*eps)return null;
+return [outA,outB];
+}
+function sortSectionPolygonPoints(poly,plane){
+if(!poly||poly.length<3)return poly;
+var basis=getCutSectionPlaneBasis(plane);
+var cx=0,cy=0,cz=0;
+for(var i=0;i<poly.length;i++){
+cx+=poly[i].pos[0];cy+=poly[i].pos[1];cz+=poly[i].pos[2];
+}
+cx/=poly.length;cy/=poly.length;cz/=poly.length;
+poly.sort(function(pa,pb){
+var va=new THREE.Vector3(pa.pos[0]-cx,pa.pos[1]-cy,pa.pos[2]-cz);
+var vb=new THREE.Vector3(pb.pos[0]-cx,pb.pos[1]-cy,pb.pos[2]-cz);
+var aa=Math.atan2(va.dot(basis.v),va.dot(basis.u));
+var ab=Math.atan2(vb.dot(basis.v),vb.dot(basis.u));
+return aa-ab;
+});
+return poly;
+}
+function clipSectionPolygonAgainstHalfspace(poly,plane,eps){
+if(!poly||poly.length<3)return [];
+var out=[];
+for(var i=0;i<poly.length;i++){
+var a=poly[i],b=poly[(i+1)%poly.length];
+var da=getClipPlaneSignedDistance(a.pos,plane);
+var db=getClipPlaneSignedDistance(b.pos,plane);
+var aIn=da>=-eps,bIn=db>=-eps;
+if(aIn&&bIn){
+out.push({pos:b.pos.slice(),realValue:b.realValue});
+continue;
+}
+if(aIn&&!bIn){
+var t1=da/(da-db);
+out.push(lerpCutSectionDataPoint(a,b,t1));
+continue;
+}
+if(!aIn&&bIn){
+var t2=da/(da-db);
+out.push(lerpCutSectionDataPoint(a,b,t2));
+out.push({pos:b.pos.slice(),realValue:b.realValue});
+}
+}
+return out;
+}
+function getElementCutSectionPolygon(elemIdx,nodes,plane,planes,eps){
+var conn=getSectionElementConn(elemIdx,nodes);
+var edges=getSectionElementEdgePairs(conn);
+if(!conn||!edges)return null;
+var pts=[];
+var tolSq=eps*eps;
+var elemVal=getCutSectionFaceRealValue(elemIdx);
+for(var ei=0;ei<edges.length;ei++){
+var edge=edges[ei];
+var ia=conn[edge[0]],ib=conn[edge[1]];
+if(ia<0||ib<0||ia>=nodes.length||ib>=nodes.length)continue;
+var pa=nodes[ia],pb=nodes[ib];
+if(!pa||!pb)continue;
+var va=(elemVal!==null)?elemVal:getCutSectionNodeRealValue(ia);
+var vb=(elemVal!==null)?elemVal:getCutSectionNodeRealValue(ib);
+var da=getClipPlaneSignedDistance(pa,plane);
+var db=getClipPlaneSignedDistance(pb,plane);
+var aOn=Math.abs(da)<=eps;
+var bOn=Math.abs(db)<=eps;
+if(aOn&&bOn){
+addCutSectionDataPoint(pts,pa,va,tolSq);
+addCutSectionDataPoint(pts,pb,vb,tolSq);
+continue;
+}
+if(aOn)addCutSectionDataPoint(pts,pa,va,tolSq);
+if(bOn)addCutSectionDataPoint(pts,pb,vb,tolSq);
+if((da<-eps&&db>eps)||(da>eps&&db<-eps)){
+var denom=da-db;
+if(Math.abs(denom)>1e-20){
+var t=da/denom;
+if(t>=-1e-8&&t<=1+1e-8){
+addCutSectionDataPoint(pts,[
+pa[0]+(pb[0]-pa[0])*t,
+pa[1]+(pb[1]-pa[1])*t,
+pa[2]+(pb[2]-pa[2])*t
+],va+(vb-va)*t,tolSq);
+}
+}
+}
+}
+if(pts.length<3)return null;
+var poly=sortSectionPolygonPoints(pts,plane);
+for(var pi=0;pi<planes.length;pi++){
+var other=planes[pi];
+if(!other||other.id===plane.id)continue;
+poly=clipSectionPolygonAgainstHalfspace(poly,other,eps);
+if(poly.length<3)return null;
+poly=sortSectionPolygonPoints(poly,plane);
+}
+return poly;
+}
+function getCutSectionPlaneBasis(plane){
+var n=new THREE.Vector3(plane.normal[0],plane.normal[1],plane.normal[2]).normalize();
+var ref=Math.abs(n.z)<0.9?new THREE.Vector3(0,0,1):new THREE.Vector3(0,1,0);
+var u=new THREE.Vector3().crossVectors(ref,n).normalize();
+if(u.lengthSq()<1e-16)u=new THREE.Vector3().crossVectors(new THREE.Vector3(1,0,0),n).normalize();
+var v=new THREE.Vector3().crossVectors(n,u).normalize();
+return{u:u,v:v};
+}
+function collectCutSectionLoops(segments,plane,tol){
+if(!segments||segments.length===0)return [];
+var basis=getCutSectionPlaneBasis(plane);
+var origin=new THREE.Vector3(segments[0].a.pos[0],segments[0].a.pos[1],segments[0].a.pos[2]);
+function projectPoint(pos){
+var pv=new THREE.Vector3(pos[0],pos[1],pos[2]).sub(origin);
+return{x:pv.dot(basis.u),y:pv.dot(basis.v)};
+}
+function pointKey(pos){
+var p2=projectPoint(pos);
+return Math.round(p2.x/tol)+','+Math.round(p2.y/tol);
+}
+var verts=Object.create(null),edges=[];
+function ensureVert(segPoint){
+var key=pointKey(segPoint.pos);
+var p2=projectPoint(segPoint.pos);
+if(!verts[key]){
+verts[key]={key:key,pos:segPoint.pos.slice(),realValue:segPoint.realValue,x:p2.x,y:p2.y,links:[]};
+}else{
+verts[key].pos[0]=(verts[key].pos[0]+segPoint.pos[0])*0.5;
+verts[key].pos[1]=(verts[key].pos[1]+segPoint.pos[1])*0.5;
+verts[key].pos[2]=(verts[key].pos[2]+segPoint.pos[2])*0.5;
+verts[key].realValue=(verts[key].realValue+segPoint.realValue)*0.5;
+verts[key].x=(verts[key].x+p2.x)*0.5;
+verts[key].y=(verts[key].y+p2.y)*0.5;
+}
+return key;
+}
+for(var i=0;i<segments.length;i++){
+var sa=ensureVert(segments[i].a),sb=ensureVert(segments[i].b);
+if(sa===sb)continue;
+if(verts[sa].links.indexOf(sb)<0)verts[sa].links.push(sb);
+if(verts[sb].links.indexOf(sa)<0)verts[sb].links.push(sa);
+edges.push([sa,sb]);
+}
+var visited=Object.create(null),loops=[];
+function edgeKey(a,b){return a<b?(a+'|'+b):(b+'|'+a);}
+for(var ei=0;ei<edges.length;ei++){
+var start=edges[ei][0],next=edges[ei][1];
+if(visited[edgeKey(start,next)])continue;
+var loop=[start],prev=null,curr=start,guard=0;
+while(next&&guard<edges.length+8){
+guard++;
+visited[edgeKey(curr,next)]=1;
+prev=curr;
+curr=next;
+if(curr===start){break;}
+loop.push(curr);
+var links=verts[curr].links;
+next=null;
+for(var li=0;li<links.length;li++){
+if(links[li]===prev)continue;
+if(!visited[edgeKey(curr,links[li])]){next=links[li];break;}
+}
+if(!next){
+for(var li2=0;li2<links.length;li2++){
+if(links[li2]!==prev){next=links[li2];break;}
+}
+}
+}
+if(curr===start&&loop.length>=3){
+loops.push(loop.map(function(k){return verts[k];}));
+}
+}
+return loops;
+}
+function getCutSectionLoopColor(realVal){
+if(noContour)return new THREE.Color(0.78,0.78,0.78);
+return getLegendColorFromReal(realVal);
+}
+function appendElementCutSectionSurface(poly,planeOffsetVec,posOut,colOut,valOut){
+if(!poly||poly.length<3)return;
+for(var i=1;i<poly.length-1;i++){
+var tri=[poly[0],poly[i],poly[i+1]];
+for(var k=0;k<3;k++){
+var p=tri[k].pos;
+var cc=getCutSectionLoopColor(tri[k].realValue);
+posOut.push(p[0]+planeOffsetVec[0],p[1]+planeOffsetVec[1],p[2]+planeOffsetVec[2]);
+colOut.push(cc.r,cc.g,cc.b);
+if(valOut)valOut.push(tri[k].realValue);
+}
+}
+}
+function appendCutSectionSurfaceGeometry(segments,plane,tol,posOut,colOut){
+if(!segments||segments.length===0||!THREE.ShapeUtils||!THREE.ShapeUtils.triangulateShape)return;
+var loops=collectCutSectionLoops(segments,plane,tol);
+for(var li=0;li<loops.length;li++){
+var loop=loops[li];
+if(!loop||loop.length<3)continue;
+var contour=[];
+for(var i=0;i<loop.length;i++)contour.push(new THREE.Vector2(loop[i].x,loop[i].y));
+var tris=THREE.ShapeUtils.triangulateShape(contour,[]);
+if(!tris||tris.length===0)continue;
+for(var ti=0;ti<tris.length;ti++){
+var tri=tris[ti];
+for(var k=0;k<3;k++){
+var vtx=loop[tri[k]];
+var cc=getCutSectionLoopColor(vtx.realValue);
+posOut.push(vtx.pos[0],vtx.pos[1],vtx.pos[2]);
+colOut.push(cc.r,cc.g,cc.b);
+}
+}
+}
+}
+function ensureCutSectionProjectionLines(){
+if(!sc)return null;
+if(!cutSectionLines){
+var geo=new THREE.BufferGeometry();
+geo.setAttribute('position',new THREE.Float32BufferAttribute([],3));
+cutSectionLines=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({color:0x000000,transparent:true,opacity:0.98,depthTest:true,depthWrite:false}));
+cutSectionLines.renderOrder=999;
+cutSectionLines.frustumCulled=false;
+sc.add(cutSectionLines);
+}
+return cutSectionLines;
+}
+function ensureCutSectionProjectionWideLines(){
+if(!sc)return null;
+if(!cutSectionLinesWide){
+var geo=new THREE.BufferGeometry();
+geo.setAttribute('position',new THREE.Float32BufferAttribute([],3));
+cutSectionLinesWide=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({
+color:0x000000,
+side:THREE.DoubleSide,
+transparent:true,
+opacity:0.98,
+depthTest:true,
+depthWrite:false,
+polygonOffset:true,
+polygonOffsetFactor:-2,
+polygonOffsetUnits:-2
+}));
+cutSectionLinesWide.renderOrder=998;
+cutSectionLinesWide.frustumCulled=false;
+sc.add(cutSectionLinesWide);
+}
+return cutSectionLinesWide;
+}
+function appendCutSectionWideSegment(a,b,normal,offset,halfWidth,posOut){
+if(!a||!b||!normal||!posOut)return;
+var ax=a[0]+normal[0]*offset,ay=a[1]+normal[1]*offset,az=a[2]+normal[2]*offset;
+var bx=b[0]+normal[0]*offset,by=b[1]+normal[1]*offset,bz=b[2]+normal[2]*offset;
+var tx=bx-ax,ty=by-ay,tz=bz-az;
+var tLen=Math.sqrt(tx*tx+ty*ty+tz*tz);
+if(!(tLen>1e-12))return;
+var sx=(normal[1]*tz)-(normal[2]*ty);
+var sy=(normal[2]*tx)-(normal[0]*tz);
+var sz=(normal[0]*ty)-(normal[1]*tx);
+var sLen=Math.sqrt(sx*sx+sy*sy+sz*sz);
+if(!(sLen>1e-12))return;
+sx=(sx/sLen)*halfWidth;
+sy=(sy/sLen)*halfWidth;
+sz=(sz/sLen)*halfWidth;
+var p1=[ax-sx,ay-sy,az-sz];
+var p2=[ax+sx,ay+sy,az+sz];
+var p3=[bx+sx,by+sy,bz+sz];
+var p4=[bx-sx,by-sy,bz-sz];
+posOut.push(
+p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], p3[0],p3[1],p3[2],
+p1[0],p1[1],p1[2], p3[0],p3[1],p3[2], p4[0],p4[1],p4[2]
+);
+}
+function ensureCutSectionProjectionSurface(){
+if(!sc)return null;
+if(!cutSectionSurface){
+var geo=new THREE.BufferGeometry();
+geo.setAttribute('position',new THREE.Float32BufferAttribute([],3));
+geo.setAttribute('color',new THREE.Float32BufferAttribute([],3));
+geo.setAttribute('sval',new THREE.Float32BufferAttribute([],1));
+cutSectionSurface=new THREE.Mesh(geo,new THREE.MeshPhongMaterial({
+vertexColors:true,
+side:THREE.DoubleSide,
+flatShading:false,
+depthWrite:true,
+polygonOffset:true,
+polygonOffsetFactor:-1,
+polygonOffsetUnits:-1
+}));
+cutSectionSurface.renderOrder=997;
+cutSectionSurface.frustumCulled=false;
+sc.add(cutSectionSurface);
+}
+return cutSectionSurface;
+}
+function shouldUseCutSectionSharpDiscrete(){
+return !!(discreteMode&&!noContour&&!isCutSectionElementMode());
+}
+function createCutSectionProjectionColorMaterial(){
+return new THREE.MeshPhongMaterial({
+vertexColors:true,
+side:THREE.DoubleSide,
+flatShading:false,
+depthWrite:true,
+polygonOffset:true,
+polygonOffsetFactor:-1,
+polygonOffsetUnits:-1
+});
+}
+function createCutSectionProjectionSharpMaterial(){
+var mat=createSharpDiscreteMaterial(getDiscreteLegendShaderData());
+mat.depthWrite=true;
+mat.depthTest=true;
+mat.polygonOffset=true;
+mat.polygonOffsetFactor=-1;
+mat.polygonOffsetUnits=-1;
+return mat;
+}
+function syncCutSectionProjectionSurfaceMaterial(mesh){
+if(!mesh)return;
+var wantsSharp=shouldUseCutSectionSharpDiscrete();
+var modeKey=wantsSharp?'sharp':'color';
+if(wantsSharp||!mesh.material||mesh.userData.cutSectionSurfaceMode!==modeKey){
+if(mesh.material)mesh.material.dispose();
+mesh.material=wantsSharp?createCutSectionProjectionSharpMaterial():createCutSectionProjectionColorMaterial();
+mesh.userData.cutSectionSurfaceMode=modeKey;
+}
+}
+function clearCutSectionProjection(){
+if(cutSectionLines)cutSectionLines.visible=false;
+if(cutSectionLinesWide)cutSectionLinesWide.visible=false;
+if(cutSectionSurface)cutSectionSurface.visible=false;
+}
+function updateCutSectionProjection(nodes){
+var obj=ensureCutSectionProjectionLines();
+var wide=ensureCutSectionProjectionWideLines();
+var surf=ensureCutSectionProjectionSurface();
+if(!obj||!wide||!surf)return;
+syncCutSectionProjectionSurfaceMaterial(surf);
+if(!cutSectionProjectionOn||!anyCutEnabled()||!nodes||!visibleFaces||visibleFaces.length===0){
+obj.visible=false;
+wide.visible=false;
+surf.visible=false;
+return;
+}
+var planes=getActiveClipHalfspaces();
+if(!planes||planes.length===0){
+obj.visible=false;
+wide.visible=false;
+surf.visible=false;
+return;
+}
+var diag=Math.max(getMeshDiagonalSize(),1);
+var eps=Math.max(diag*1e-7,1e-9);
+var dedupeTol=Math.max(diag*2e-6,1e-8);
+var planeOffset=Math.max(diag*1e-4,1e-8);
+var lineOffset=planeOffset*1.8;
+var wideOffset=planeOffset*1.2;
+var wideHalfWidth=Math.max(diag*0.0018,planeOffset*8.0);
+var pos=[],widePos=[];
+var surfPos=[],surfCol=[],surfVal=[];
+var segBuckets=Object.create(null);
+for(var pi=0;pi<planes.length;pi++){
+var plane=planes[pi];
+var nx=plane.normal[0],ny=plane.normal[1],nz=plane.normal[2];
+for(var fi=0;fi<visibleFaces.length;fi++){
+var seg=getTrianglePlaneIntersectionData(visibleFaces[fi],nodes,plane,eps,visibleFaceElemIdx[fi]);
+if(!seg)continue;
+seg=clipSectionSegmentToHalfspaces(seg[0],seg[1],planes,plane.id,eps);
+if(!seg)continue;
+var a=seg[0].pos,b=seg[1].pos;
+var key=getCutSectionSegmentKey(a,b,dedupeTol,plane.id);
+var bucket=segBuckets[key];
+if(!bucket){
+bucket={a:seg[0],b:seg[1],nx:nx,ny:ny,nz:nz,count:0,planeId:plane.id};
+segBuckets[key]=bucket;
+}else{
+bucket.a.realValue=(bucket.a.realValue+seg[0].realValue)*0.5;
+bucket.b.realValue=(bucket.b.realValue+seg[1].realValue)*0.5;
+}
+bucket.count++;
+}
+}
+for(var key in segBuckets){
+if(!Object.prototype.hasOwnProperty.call(segBuckets,key))continue;
+var bucket=segBuckets[key];
+if(bucket.count!==1)continue;
+appendCutSectionWideSegment(bucket.a.pos,bucket.b.pos,[bucket.nx,bucket.ny,bucket.nz],wideOffset,wideHalfWidth,widePos);
+pos.push(
+bucket.a.pos[0]+bucket.nx*lineOffset,bucket.a.pos[1]+bucket.ny*lineOffset,bucket.a.pos[2]+bucket.nz*lineOffset,
+bucket.b.pos[0]+bucket.nx*lineOffset,bucket.b.pos[1]+bucket.ny*lineOffset,bucket.b.pos[2]+bucket.nz*lineOffset
+);
+}
+if(obj.geometry)obj.geometry.dispose();
+obj.geometry=new THREE.BufferGeometry();
+if(pos.length>0){
+obj.geometry.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+obj.visible=true;
+}else{
+obj.visible=false;
+}
+if(wide.geometry)wide.geometry.dispose();
+wide.geometry=new THREE.BufferGeometry();
+if(widePos.length>0){
+wide.geometry.setAttribute('position',new THREE.Float32BufferAttribute(widePos,3));
+wide.geometry.computeVertexNormals();
+wide.visible=true;
+}else{
+wide.visible=false;
+}
+for(var pi2=0;pi2<planes.length;pi2++){
+var plane2=planes[pi2];
+var planeOffsetVec=[plane2.normal[0]*planeOffset,plane2.normal[1]*planeOffset,plane2.normal[2]*planeOffset];
+for(var ei=0;ei<EIDS.length;ei++){
+if(isElemHidden(ei))continue;
+var poly=getElementCutSectionPolygon(ei,nodes,plane2,planes,eps);
+if(!poly||poly.length<3)continue;
+appendElementCutSectionSurface(poly,planeOffsetVec,surfPos,surfCol,surfVal);
+}
+}
+if(surf.geometry)surf.geometry.dispose();
+surf.geometry=new THREE.BufferGeometry();
+if(surfPos.length>0){
+surf.geometry.setAttribute('position',new THREE.Float32BufferAttribute(surfPos,3));
+surf.geometry.setAttribute('color',new THREE.Float32BufferAttribute(surfCol,3));
+surf.geometry.setAttribute('sval',new THREE.Float32BufferAttribute(surfVal,1));
+surf.geometry.computeVertexNormals();
+surf.visible=true;
+}else{
+surf.visible=false;
+}
+}
+function tgCutSectionProjection(enabled){
+cutSectionProjectionOn=!!enabled;
+var cb=document.getElementById('cut-section-proj');
+if(cb)cb.checked=cutSectionProjectionOn;
+if(anyCutEnabled()){
+if(cutSectionProjectionOn)applyCutClipping();
+else setCutClippingPlanesForScene([]);
+}
+rebuildCutMesh();
+}
 function getCutSignedDistance(p,cut){
 if(!p||!cut)return -Infinity;
 if(cut.type==='rotation-sector'&&cut.axisDir&&cut.refPoint&&cut.baseVisible){
@@ -7644,11 +8808,13 @@ var vtxSrc=`attribute float sval;
 varying float vVal;
 varying vec3 vNormalV;
 varying vec3 vViewDir;
+#include <clipping_planes_pars_vertex>
 void main(){
 vVal=sval;
 vec4 mvPos=modelViewMatrix*vec4(position,1.0);
 vNormalV=normalize(normalMatrix*normal);
 vViewDir=normalize(-mvPos.xyz);
+#include <clipping_planes_vertex>
 gl_Position=projectionMatrix*mvPos;
 }`;
 var fragSrc=`precision mediump float;
@@ -7658,7 +8824,9 @@ varying vec3 vViewDir;
 uniform int uCount;
 uniform float uVals[33];
 uniform vec3 uCols[32];
+#include <clipping_planes_pars_fragment>
 void main(){
+#include <clipping_planes_fragment>
 float t=vVal;
 int idx=0;
 if(uCount>0){idx=uCount-1;}
@@ -7693,6 +8861,7 @@ return new THREE.ShaderMaterial({
 uniforms:{uCount:{value:count},uVals:{value:uVals},uCols:{value:uCols}},
 vertexShader:vtxSrc,
 fragmentShader:fragSrc,
+clipping:true,
 side:THREE.DoubleSide
 });
 }
@@ -7729,6 +8898,7 @@ vrfSig=lo+':'+hi+':'+contourSig+':'+(currentVar||'');
 return [
 renderMode,
 'edge='+edgeMode,
+'section='+(cutSectionProjectionOn?'on':'off'),
 'cuts='+getCutTopologySignature(),
 'hide='+hiddenElemRevision,
 'vrf='+vrfSig
@@ -7743,6 +8913,11 @@ updateHideHoverHighlightFromElem(hideHoverElemIdx);
 clearHideHoverHighlight();
 }
 updateLegendExtremaTargets();
+if(anyCutEnabled()){
+if(cutSectionProjectionOn)applyCutClipping();
+else setCutClippingPlanesForScene([]);
+}
+updateCutSectionProjection(meshNodesRef||getRenderNodes());
 }
 
 function tryFastUpdateMeshBuffers(nodes,colors,renderMode,topologyKey){
@@ -7873,8 +9048,11 @@ if(vrfGhostEg){sc.remove(vrfGhostEg);vrfGhostEg=null;}
 ms=null;eg=null;featureEg=null;
 
 // Harmonic mode can force external surface only for higher performance.
-var faceSrc=EXTERNAL_SURFACE_ONLY?BF:getFullFaces();
-var faceElemSrc=EXTERNAL_SURFACE_ONLY?BFE:getFullFaceElemMap();
+// Section mesh on plane also needs the boundary shell only, otherwise internal faces
+// remain visible behind the cut and the model looks transparent.
+var useBoundarySurface=EXTERNAL_SURFACE_ONLY||cutSectionProjectionOn;
+var faceSrc=useBoundarySurface?BF:getFullFaces();
+var faceElemSrc=useBoundarySurface?BFE:getFullFaceElemMap();
 visibleFaces=[];
 visibleFaceElemIdx=[];
 visibleElemMap=Object.create(null);
@@ -10047,13 +11225,18 @@ zoomBoxDiv.style.cssText='position:absolute;display:none;border:2px dashed #2196
 document.getElementById('c').appendChild(zoomBoxDiv);
 }
 
-// Rotate CW/CCW - orbit around world Y axis (turntable)
+// Rotate CW/CCW - roll around the current screen normal
+function getScreenNormalAxis(){
+const axis=new THREE.Vector3(0,0,1).applyQuaternion(camQuat);
+if(axis.lengthSq()<1e-12)return new THREE.Vector3(0,0,1);
+return axis.normalize();
+}
 function rotCW(){
-const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),-Math.PI/12);
+const q=new THREE.Quaternion().setFromAxisAngle(getScreenNormalAxis(),Math.PI/12);
 camQuat.premultiply(q);camQuat.normalize();uc();
 }
 function rotCCW(){
-const q=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),Math.PI/12);
+const q=new THREE.Quaternion().setFromAxisAngle(getScreenNormalAxis(),-Math.PI/12);
 camQuat.premultiply(q);camQuat.normalize();uc();
 }
 
@@ -13796,6 +14979,7 @@ setRotationCutVisualVisibility(show,false);
 }
 function scheduleCutMeshRebuild(){
 if(cutRebuildTimer)clearTimeout(cutRebuildTimer);
+clearCutSectionProjection();
 var rotState=sanitizeRotationCutState(cutPlanes.rotation||{});
 var delay=(rotState.on&&rotState.angle2On)?90:250;
 cutRebuildTimer=setTimeout(function(){cutRebuildTimer=null;rebuildCutMesh();},delay);
@@ -13852,6 +15036,16 @@ var cut=buildAxisAlignedCut(axis);
 if(!cut)return;
 clipPlanesThree[idx]=new THREE.Plane(new THREE.Vector3(cut.normal[0],cut.normal[1],cut.normal[2]),cut.constant);
 }
+function setCutClippingPlanesForScene(cArr){
+var planes=(cArr&&cArr.length)?cArr:[];
+if(ms&&ms.material)ms.material.clippingPlanes=planes;
+if(eg&&eg.material)eg.material.clippingPlanes=planes;
+if(featureEg&&featureEg.material)featureEg.material.clippingPlanes=planes;
+if(uMs&&uMs.material)uMs.material.clippingPlanes=planes;
+if(uEg&&uEg.material)uEg.material.clippingPlanes=planes;
+if(vrfGhostMs&&vrfGhostMs.material)vrfGhostMs.material.clippingPlanes=planes;
+if(vrfGhostEg&&vrfGhostEg.material)vrfGhostEg.material.clippingPlanes=planes;
+}
 // Apply Three.js clipping planes for instant visual feedback during slider drag
 function applyCutClipping(){
 ['x','y','z'].forEach(function(a){computeClipPlane(a);});
@@ -13869,20 +15063,10 @@ activeClipPlanesArr.push(rotationClipPlaneThree2);
 }
 }
 var cArr=activeClipPlanesArr.length>0?activeClipPlanesArr:[];
-if(ms&&ms.material)ms.material.clippingPlanes=cArr;
-if(eg&&eg.material)eg.material.clippingPlanes=cArr;
-if(featureEg&&featureEg.material)featureEg.material.clippingPlanes=cArr;
-if(uMs&&uMs.material)uMs.material.clippingPlanes=cArr;
-if(uEg&&uEg.material)uEg.material.clippingPlanes=cArr;
-if(vrfGhostMs&&vrfGhostMs.material)vrfGhostMs.material.clippingPlanes=cArr;
-if(vrfGhostEg&&vrfGhostEg.material)vrfGhostEg.material.clippingPlanes=cArr;
+setCutClippingPlanesForScene(cArr);
 }
 function rebuildCutMesh(){
-if(ms&&ms.material)ms.material.clippingPlanes=[];
-if(eg&&eg.material)eg.material.clippingPlanes=[];
-if(featureEg&&featureEg.material)featureEg.material.clippingPlanes=[];
-if(vrfGhostMs&&vrfGhostMs.material)vrfGhostMs.material.clippingPlanes=[];
-if(vrfGhostEg&&vrfGhostEg.material)vrfGhostEg.material.clippingPlanes=[];
+setCutClippingPlanesForScene([]);
 updateAxisCutVisuals();
 updateRotationCutVisuals(getRotationCutData());
 // Rebuild mesh with element-based filtering
@@ -13924,13 +15108,8 @@ if(rotAngle2El)rotAngle2El.value='0';
 updateAxisCutVisuals();
 updateRotationCutVisuals(null);
 activeClipPlanesArr=[];
-if(ms&&ms.material)ms.material.clippingPlanes=[];
-if(eg&&eg.material)eg.material.clippingPlanes=[];
-if(featureEg&&featureEg.material)featureEg.material.clippingPlanes=[];
-if(uMs&&uMs.material)uMs.material.clippingPlanes=[];
-if(uEg&&uEg.material)uEg.material.clippingPlanes=[];
-if(vrfGhostMs&&vrfGhostMs.material)vrfGhostMs.material.clippingPlanes=[];
-if(vrfGhostEg&&vrfGhostEg.material)vrfGhostEg.material.clippingPlanes=[];
+setCutClippingPlanesForScene([]);
+clearCutSectionProjection();
 updateValueWindowsForCut();
 rebuildCutMesh();
 }
@@ -14488,6 +15667,7 @@ cfg.cutX={on:document.getElementById('cut-x-on').checked,pos:document.getElement
 cfg.cutY={on:document.getElementById('cut-y-on').checked,pos:document.getElementById('cut-y-pos').value,dir:document.getElementById('cut-y-dir').value};
 cfg.cutZ={on:document.getElementById('cut-z-on').checked,pos:document.getElementById('cut-z-pos').value,dir:document.getElementById('cut-z-dir').value};
 cfg.cutHidePlanes=!!(document.getElementById('cut-hide-planes')&&document.getElementById('cut-hide-planes').checked);
+cfg.cutSectionProjection=!!(document.getElementById('cut-section-proj')&&document.getElementById('cut-section-proj').checked);
 var rcState=sanitizeRotationCutState(cutPlanes.rotation||readRotationCutStateFromUi());
 cfg.rotationCut={
 on:rcState.on,
@@ -14571,6 +15751,7 @@ return true;
 cfg.hideElements=hideElemMode;
 cfg.hideAllConnected=hideAllConnectedMode;
 cfg.hiddenElements=Object.keys(hiddenElemMap).map(function(k){return parseInt(k,10);}).filter(function(v){return isFinite(v)&&v>=0;});
+cfg.groupVisibilityState=cfgClone(groupVisibilityState);
 cfg.camDist=camDist;
 cfg.camQuat={x:camQuat.x,y:camQuat.y,z:camQuat.z,w:camQuat.w};
 cfg.tg={x:tg.x,y:tg.y,z:tg.z};
@@ -14957,6 +16138,9 @@ if(cfg.cutHidePlanes!==undefined){
 document.getElementById('cut-hide-planes').checked=!!cfg.cutHidePlanes;
 updateAxisCutVisuals();
 }
+if(cfg.cutSectionProjection!==undefined){
+tgCutSectionProjection(!!cfg.cutSectionProjection);
+}
 if(cfg.rotationCut){
 document.getElementById('rot-cut-on').checked=cfg.rotationCut.on;
 document.getElementById('rot-cut-axis').value=cfg.rotationCut.axis||'x';
@@ -15071,6 +16255,12 @@ var n=parseInt(ei,10);
 if(isFinite(n)&&n>=0)hiddenElemMap[n]=1;
 });
 }
+ensureConnectedGroupVisibilityState();
+if(cfg.groupVisibilityState&&Array.isArray(cfg.groupVisibilityState)&&groupVisibilityState.length){
+for(var gi=0;gi<groupVisibilityState.length;gi++){
+groupVisibilityState[gi]=(cfg.groupVisibilityState[gi]!==false);
+}
+}
 bumpHiddenElemRevision();
 var cfgHideAll=cfg.hideAllConnected!==undefined?!!cfg.hideAllConnected:false;
 setHideAllConnected(cfgHideAll);
@@ -15138,7 +16328,7 @@ try{pss();ugrl();xyRenderSheetTabs();}catch(_){}
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("VMAP 3D Viewer v1.0.4")
+        self.root.title("VMAP 3D Viewer v1.0.37")
         self.root.geometry("820x740")
         self.root.resizable(True, True)
         
@@ -15260,7 +16450,7 @@ class App:
         # Title labels - centered
         tk.Label(tf, text="Vibracoustic", font=('Arial', 18, 'bold'), fg='white', bg='#d4542a', pady=3).pack()
         tk.Label(tf, text="VMAP 3D Viewer", font=('Arial', 12), fg='white', bg='#d4542a', pady=1).pack()
-        tk.Label(tf, text="European FEA Department - v1.0.20", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
+        tk.Label(tf, text="European FEA Department - v1.0.37", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
         
         # Guideline button - floating in top-right corner of title frame
         guideline_btn = tk.Button(tf, text="Guideline", command=self.open_guideline,
