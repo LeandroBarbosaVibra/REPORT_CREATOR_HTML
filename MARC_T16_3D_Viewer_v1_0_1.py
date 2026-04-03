@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-T16 3D VIEWER v1.0.36 - Vibracoustic EU FEA Department
+T16 3D VIEWER v1.0.46 - Vibracoustic EU FEA Department
 NEW: GUI with LabelFrame steps, progress title, watermark, Guideline button
 NEW: Full 360-degree rotation and translation
 NEW: GIF export with start/end increment range
@@ -2466,7 +2466,7 @@ Scroll Wheel: Zoom
 <div class="lg">
 ''' + ('<img src="' + logo_data_uri + '" alt="Vibracoustic">' if logo_data_uri else '<h1>Vibracoustic</h1>') + '''
 <h2>T16 3D Viewer</h2>
-<span>European FEA Department - v1.0.36</span>
+<span>European FEA Department - v1.0.46</span>
 </div>
 <div class="p sidebar-card file-info-card"><div class="pt"><span>File Information</span></div>
 <div class="ir ir-file-name"><span class="il">Name: </span><span class="iv">''' + os.path.basename(reader.filepath) + '''</span></div>
@@ -3356,6 +3356,23 @@ var s=SL[i];
 if(s&&String(s.id)===sidTxt)return s;
 }
 return null;
+}
+function findPreferredStateIdForVar(v,preferredSid,preferredIncrement){
+if(!v)return '';
+if(preferredSid&&hasStateData(v,preferredSid))return String(preferredSid);
+var ids=getVarStateIds(v);
+if(!ids||ids.length===0)return '';
+if(preferredIncrement!==undefined&&preferredIncrement!==null&&String(preferredIncrement)!==''){
+var incTxt=String(preferredIncrement);
+for(var i=0;i<ids.length;i++){
+var sidTxt=String(ids[i]);
+var meta=getStateMetaEntry(sidTxt);
+if(meta&&meta.increment!==undefined&&meta.increment!==null&&String(meta.increment)===incTxt){
+return sidTxt;
+}
+}
+}
+return String(ids[0]);
 }
 function formatLegendStateTime(v){
 var num=Number(v);
@@ -4266,6 +4283,46 @@ var nodes=new Array(keys.length);
 for(var ki=0;ki<keys.length;ki++){nodes[ki]=parseInt(keys[ki],10);}
 elemNodesMap[ei]=nodes;
 }
+}
+function orientBoundaryFaceOutward(faceVerts,elemIdx,nodes){
+if(!faceVerts||faceVerts.length<3||elemIdx===undefined||elemIdx===null||elemIdx<0||!nodes)return faceVerts;
+ensureElemConnectivityMaps();
+if(!elemNodesMap||elemIdx>=elemNodesMap.length)return faceVerts;
+var elemNodeIds=elemNodesMap[elemIdx];
+if(!elemNodeIds||elemNodeIds.length<1)return faceVerts;
+var fc=[0,0,0],ec=[0,0,0];
+for(var fi=0;fi<faceVerts.length;fi++){
+var fp=nodes[faceVerts[fi]];
+if(!fp)continue;
+fc[0]+=fp[0];fc[1]+=fp[1];fc[2]+=fp[2];
+}
+var fInv=1/Math.max(1,faceVerts.length);
+fc[0]*=fInv;fc[1]*=fInv;fc[2]*=fInv;
+var eCount=0;
+for(var ei=0;ei<elemNodeIds.length;ei++){
+var ep=nodes[elemNodeIds[ei]];
+if(!ep)continue;
+ec[0]+=ep[0];ec[1]+=ep[1];ec[2]+=ep[2];
+eCount++;
+}
+if(!(eCount>0))return faceVerts;
+var eInv=1/eCount;
+ec[0]*=eInv;ec[1]*=eInv;ec[2]*=eInv;
+var p0=nodes[faceVerts[0]],p1=nodes[faceVerts[1]],p2=null;
+for(var pi=2;pi<faceVerts.length;pi++){
+var cand=nodes[faceVerts[pi]];
+if(cand){p2=cand;break;}
+}
+if(!p0||!p1||!p2)return faceVerts;
+var ux=p1[0]-p0[0],uy=p1[1]-p0[1],uz=p1[2]-p0[2];
+var vx=p2[0]-p0[0],vy=p2[1]-p0[1],vz=p2[2]-p0[2];
+var nx=uy*vz-uz*vy;
+var ny=uz*vx-ux*vz;
+var nz=ux*vy-uy*vx;
+if((nx*nx+ny*ny+nz*nz)<=1e-24)return faceVerts;
+var tx=ec[0]-fc[0],ty=ec[1]-fc[1],tz=ec[2]-fc[2];
+if((nx*tx+ny*ty+nz*tz)>0)return faceVerts.slice().reverse();
+return faceVerts;
 }
 
 function ncNormHex(hex){
@@ -9098,11 +9155,11 @@ varying vec3 vViewDir;
 #include <clipping_planes_pars_vertex>
 void main(){
 vVal=sval;
-vec4 mvPos=modelViewMatrix*vec4(position,1.0);
+vec4 mvPosition=modelViewMatrix*vec4(position,1.0);
 vNormalV=normalize(normalMatrix*normal);
-vViewDir=normalize(-mvPos.xyz);
+vViewDir=normalize(-mvPosition.xyz);
 #include <clipping_planes_vertex>
-gl_Position=projectionMatrix*mvPos;
+gl_Position=projectionMatrix*mvPosition;
 }`;
 var fragSrc=`precision mediump float;
 varying float vVal;
@@ -9338,6 +9395,7 @@ ms=null;eg=null;featureEg=null;
 var useBoundarySurface=EXTERNAL_SURFACE_ONLY||cutSectionProjectionOn;
 var faceSrc=useBoundarySurface?BF:getFullFaces();
 var faceElemSrc=useBoundarySurface?BFE:getFullFaceElemMap();
+var meshSide=(currentVar==='Displacement'&&useBoundarySurface&&cutSectionProjectionOn&&anyCutEnabled())?THREE.FrontSide:THREE.DoubleSide;
 visibleFaces=[];
 visibleFaceElemIdx=[];
 visibleElemMap=Object.create(null);
@@ -9353,6 +9411,7 @@ if(!isFaceVisible(f,nodes,cuts))return;
 var verts=[];
 f.forEach(function(i){if(i>=0&&i<nodes.length)verts.push(i);});
 if(verts.length<3)return;
+if(useBoundarySurface)verts=orientBoundaryFaceOutward(verts,faceEi,nodes);
 
 // VRF check
 if(vrfEnabled&&!noContour){
@@ -9374,7 +9433,7 @@ if(realVal<vrfLo||realVal>vrfHi)return;
 }
 }
 
-visibleFaces.push(f);
+visibleFaces.push(verts.slice());
 visibleFaceElemIdx.push(faceEi);
 if(faceEi!==undefined&&faceEi!==null&&faceEi>=0){
 visibleElemMap[faceEi]=1;
@@ -9460,6 +9519,8 @@ meshMat=createSharpDiscreteMaterial(shData);
 }else{
 meshMat=new THREE.MeshPhongMaterial({vertexColors:true,side:THREE.DoubleSide,flatShading:false});
 }
+meshMat.side=meshSide;
+meshMat.needsUpdate=true;
 meshMat.wireframe=wfOn;
 ms=new THREE.Mesh(g,meshMat);
 sc.add(ms);
@@ -9733,18 +9794,29 @@ sel.appendChild(o);
 
 function ovs(){
 const sel=document.getElementById('vs');
+const prevSid=cst||document.getElementById('ss').value||'';
+const prevMeta=prevSid?getStateMetaEntry(prevSid):null;
 currentVar=sel.value;
 AD=ensureVarStateCache(currentVar);
-cst=null;rawColors=null;centroidRawColors=null;
+cst=null;rawColors=null;centroidRawColors=null;curColors=null;
 dataMin=0;dataMax=1;curMin=0;curMax=1;
 legendAutoResetPending=true;
 refreshDisplacementComponentUi();
 updateLegendRangeInputs();
+var ssEl=document.getElementById('ss');
 document.getElementById('leg-data-info').textContent='Data range: select an increment';
-document.getElementById('ss').value='';
+if(ssEl)ssEl.value='';
 updateLegendStateMeta(null);
 refreshExtrapolationSummary();
-cn=ON.slice();cm(getRenderNodes(),null);
+cn=ON.slice();
+var matchedSid=findPreferredStateIdForVar(currentVar,prevSid,prevMeta?prevMeta.increment:null);
+if(matchedSid&&ssEl){
+ssEl.value=matchedSid;
+osc();
+return;
+}
+if(cutSectionProjectionOn&&anyCutEnabled())rebuildCutMesh();
+else cm(getRenderNodes(),null);
 ulv(0,1);
 updGrad();
 updCb();
@@ -9755,13 +9827,17 @@ function osc(){
 const sel=document.getElementById('ss');
 const sid=sel.value;
 if(!sid){
-cst=null;cn=ON.slice();cm(getRenderNodes(),null);
+cst=null;rawColors=null;centroidRawColors=null;curColors=null;cn=ON.slice();
+if(cutSectionProjectionOn&&anyCutEnabled())rebuildCutMesh();
+else cm(getRenderNodes(),null);
 updateLegendStateMeta(null);
 document.getElementById('st').textContent='Undeformed mesh';
 return;}
 const sd=getStateData(currentVar,sid);
 if(!sd){
-cst=null;cn=ON.slice();cm(getRenderNodes(),null);
+cst=null;rawColors=null;centroidRawColors=null;curColors=null;cn=ON.slice();
+if(cutSectionProjectionOn&&anyCutEnabled())rebuildCutMesh();
+else cm(getRenderNodes(),null);
 updateLegendStateMeta(null);
 document.getElementById('st').textContent='Increment data not available for '+sid;
 return;
@@ -9825,9 +9901,12 @@ cn=[];
 for(let i=0;i<ON.length;i++){
 const o=ON[i],d=(sdNodes[i]||o);
 cn.push([o[0]+(d[0]-o[0])*cs,o[1]+(d[1]-o[1])*cs,o[2]+(d[2]-o[2])*cs]);}
-cm(getRenderNodes(),drawColors);
+if(cutSectionProjectionOn&&anyCutEnabled())rebuildCutMesh();
+else cm(getRenderNodes(),drawColors);
 document.getElementById('st').textContent='Scale '+scaleText(cs)+'x applied ('+getCurrentVarDisplayName()+')';
-}else{cm(ON,drawColors);
+}else{
+if(cutSectionProjectionOn&&anyCutEnabled())rebuildCutMesh();
+else cm(ON,drawColors);
 document.getElementById('st').textContent='No displacement data';}
 // Update active measurement for new increment
 if(hasAnyMeasurements())updateMeasurement();
@@ -15356,11 +15435,11 @@ updateAxisCutVisuals();
 updateRotationCutVisuals(getRotationCutData());
 // Rebuild mesh with element-based filtering
 var drawColors=null;
-if(!noContour&&rawColors){
+if(cst&&!noContour&&rawColors){
 if(Math.abs(curMin-dataMin)>1e-20||Math.abs(curMax-dataMax)>1e-20){
 drawColors=remapColors(rawColors,dataMin,dataMax,curMin,curMax);
 }else{drawColors=rawColors;}
-}else if(!noContour&&curColors){drawColors=curColors;}
+}else if(cst&&!noContour&&curColors){drawColors=curColors;}
 cm(getRenderNodes(),drawColors);
 // Also rebuild undeformed mesh if visible
 if(showUndeformed){
@@ -16616,7 +16695,7 @@ try{pss();ugrl();xyRenderSheetTabs();}catch(_){}
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("T16 3D Viewer v1.0.36")
+        self.root.title("T16 3D Viewer v1.0.46")
         self.root.geometry("820x725")
         self.root.resizable(True, True)
         
@@ -16738,7 +16817,7 @@ class App:
         # Title labels - centered
         tk.Label(tf, text="Vibracoustic", font=('Arial', 18, 'bold'), fg='white', bg='#d4542a', pady=3).pack()
         tk.Label(tf, text="T16 3D Viewer", font=('Arial', 12), fg='white', bg='#d4542a', pady=1).pack()
-        tk.Label(tf, text="European FEA Department - v1.0.36", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
+        tk.Label(tf, text="European FEA Department - v1.0.46", font=('Arial', 9, 'italic'), fg='#ffccaa', bg='#d4542a').pack()
         
         # Guideline button - floating in top-right corner of title frame
         guideline_btn = tk.Button(tf, text="Guideline", command=self.open_guideline,
